@@ -1,0 +1,253 @@
+
+/* ==========================================================================
+   Audio. Two things matter here.
+
+   1. The game clock runs off audioContext.currentTime whenever the context
+      exists, so obstacles stay welded to the music instead of drifting with
+      the display refresh rate.
+   2. assets/audio/ ships empty, so the soundtrack is synthesised at the
+      level's own BPM from oscillators. If a real mp3 is dropped in later it is
+      used instead, and if WebAudio is unavailable the game is simply silent.
+   ========================================================================== */
+
+var Sound = {
+  ctx: null, master: null, musicGain: null, sfxGain: null,
+  analyser: null, freq: null, noise: null,
+  bass: 0, level: null, bpm: 120,
+  buffer: null, source: null, startedAt: 0, playing: false,
+  nextBeat: 0, beatIndex: 0, synth: true, failed: false,
+
+  init: function(){
+    if(this.ctx || this.failed) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC){ this.failed = true; return; }
+    try {
+      this.ctx = new AC();
+      this.master   = this.ctx.createGain();
+      this.musicGain = this.ctx.createGain();
+      this.sfxGain   = this.ctx.createGain();
+      this.analyser  = this.ctx.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.72;
+      this.freq = new Uint8Array(this.analyser.frequencyBinCount);
+
+      this.musicGain.connect(this.master);
+      this.sfxGain.connect(this.master);
+      this.master.connect(this.analyser);
+      this.analyser.connect(this.ctx.destination);
+      this.applyVolumes();
+
+      // One second of noise, reused by hats and the death burst.
+      var n = this.ctx.sampleRate | 0;
+      this.noise = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+      var d = this.noise.getChannelData(0);
+      for(var i=0;i<n;i++) d[i] = Math.random()*2-1;
+    } catch(e){ this.failed = true; this.ctx = null; }
+  },
+
+  resume: function(){
+    if(this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+  },
+
+  applyVolumes: function(){
+    if(!this.ctx) return;
+    var s = Save.data.settings;
+    this.musicGain.gain.value = s.music;
+    this.sfxGain.gain.value   = s.sfx;
+    this.master.gain.value    = 0.9;
+  },
+
+  /* Clock the game from the audio hardware when we can. */
+  clock: function(){
+    return this.ctx ? this.ctx.currentTime : performance.now()/1000;
+  },
+
+  setLevel: function(level){
+    this.level = level;
+    this.bpm = level.meta.bpm || 120;
+    this.buffer = null;
+    this.synth = true;
+    var self = this, url = level.meta.music;
+    if(!url || !this.ctx || typeof fetch !== "function") return;
+    // file:// blocks fetch in most browsers; that is expected, not an error.
+    fetch(url).then(function(r){
+      if(!r.ok) throw 0;
+      return r.arrayBuffer();
+    }).then(function(ab){
+      return self.ctx.decodeAudioData(ab);
+    }).then(function(buf){
+      self.buffer = buf; self.synth = false;
+    }).catch(function(){ /* stay on the synthesised track */ });
+  },
+
+  /* `offset` lets a practice checkpoint resume the track where it left off. */
+  start: function(offset){
+    if(!this.ctx) return;
+    offset = offset || 0;
+    this.resume();
+    this.stop();
+    var spb16 = (60/this.bpm)/4;
+    this.startedAt = this.ctx.currentTime + 0.05;
+    this.beatIndex = Math.floor(offset/spb16);
+    this.nextBeat  = this.startedAt;
+    this.playing   = true;
+    if(this.buffer){
+      var s = this.ctx.createBufferSource();
+      s.buffer = this.buffer; s.loop = true;
+      s.connect(this.musicGain);
+      s.start(this.startedAt, offset + (this.level.meta.musicOffsetMs||0)/1000);
+      this.source = s;
+    }
+  },
+
+  stop: function(){
+    this.playing = false;
+    if(this.source){ try{ this.source.stop(); }catch(e){} this.source = null; }
+  },
+
+  /* Schedules the synthesised track a little ahead of the playhead and reads
+     the analyser for the background pulse. Called once per rendered frame. */
+  update: function(){
+    if(!this.ctx) return;
+    if(this.analyser){
+      this.analyser.getByteFrequencyData(this.freq);
+      var sum = 0;
+      for(var i=1;i<7;i++) sum += this.freq[i];
+      var v = sum/(6*255);
+      this.bass += (v - this.bass) * 0.25;
+    }
+    if(!this.playing || !this.synth) return;
+
+    var spb = 60/this.bpm, ahead = this.ctx.currentTime + 0.25;
+    while(this.nextBeat < ahead && this.beatIndex < 100000){
+      this.synthBeat(this.nextBeat, this.beatIndex);
+      this.beatIndex++;
+      this.nextBeat += spb/4;                // scheduled in sixteenths
+    }
+  },
+
+  /* A four-on-the-floor sketch: kick, hat, a bass line that walks a minor
+     progression, and a sparse arp. Enough to give the level a pulse. */
+  synthBeat: function(t, i){
+    var s16 = i % 16, bar = (i/16)|0;
+    var roots = [0, 0, 5, 3];
+    var root  = 55 * Math.pow(2, (roots[bar % roots.length]) / 12);   // around A1
+
+    if(s16 % 4 === 0) this.kick(t);
+    if(s16 % 2 === 1) this.hat(t, 0.045);
+    if(s16 % 4 === 0 || s16 === 6 || s16 === 11) this.bassNote(t, root*2, 0.16);
+    if(s16 % 2 === 0){
+      var scale = [0,3,5,7,10,12];
+      var n = scale[(i*5 + bar*3) % scale.length];
+      this.arp(t, root*4*Math.pow(2, n/12), 0.1);
+    }
+  },
+
+  env: function(node, t, peak, attack, decay){
+    var g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t+attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+attack+decay);
+    node.connect(g);
+    return g;
+  },
+
+  kick: function(t){
+    var o = this.ctx.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(42, t+0.11);
+    var g = this.env(o, t, 0.9, 0.004, 0.16);
+    g.connect(this.musicGain);
+    o.start(t); o.stop(t+0.2);
+  },
+
+  hat: function(t, dur){
+    var s = this.ctx.createBufferSource(); s.buffer = this.noise;
+    var f = this.ctx.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 7200;
+    s.connect(f);
+    var g = this.env(f, t, 0.12, 0.002, dur);
+    g.connect(this.musicGain);
+    s.start(t); s.stop(t+dur+0.02);
+  },
+
+  bassNote: function(t, hz, dur){
+    var o = this.ctx.createOscillator();
+    o.type = "sawtooth"; o.frequency.value = hz;
+    var f = this.ctx.createBiquadFilter();
+    f.type = "lowpass"; f.frequency.setValueAtTime(900, t);
+    f.frequency.exponentialRampToValueAtTime(240, t+dur);
+    o.connect(f);
+    var g = this.env(f, t, 0.30, 0.008, dur);
+    g.connect(this.musicGain);
+    o.start(t); o.stop(t+dur+0.05);
+  },
+
+  arp: function(t, hz, dur){
+    var o = this.ctx.createOscillator();
+    o.type = "square"; o.frequency.value = hz;
+    var g = this.env(o, t, 0.055, 0.005, dur);
+    g.connect(this.musicGain);
+    o.start(t); o.stop(t+dur+0.03);
+  },
+
+  /* ---- one-shot effects, all synthesised ------------------------------- */
+  sfx: function(name){
+    if(!this.ctx || Save.data.settings.sfx <= 0) return;
+    this.resume();
+    var t = this.ctx.currentTime, o, g, f, s;
+    switch(name){
+      case "death":
+        s = this.ctx.createBufferSource(); s.buffer = this.noise;
+        f = this.ctx.createBiquadFilter(); f.type = "lowpass";
+        f.frequency.setValueAtTime(4200, t);
+        f.frequency.exponentialRampToValueAtTime(180, t+0.32);
+        s.connect(f);
+        g = this.env(f, t, 0.55, 0.004, 0.33); g.connect(this.sfxGain);
+        s.start(t); s.stop(t+0.4);
+        o = this.ctx.createOscillator(); o.type = "sawtooth";
+        o.frequency.setValueAtTime(220, t);
+        o.frequency.exponentialRampToValueAtTime(48, t+0.3);
+        g = this.env(o, t, 0.34, 0.004, 0.3); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.36);
+        break;
+      case "orb": case "pad":
+        o = this.ctx.createOscillator(); o.type = "triangle";
+        o.frequency.setValueAtTime(name==="orb"?620:480, t);
+        o.frequency.exponentialRampToValueAtTime(name==="orb"?1180:900, t+0.09);
+        g = this.env(o, t, 0.3, 0.004, 0.11); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.16);
+        break;
+      case "coin":
+        [880, 1320].forEach(function(hz, k){
+          var oo = Sound.ctx.createOscillator(); oo.type = "sine"; oo.frequency.value = hz;
+          var gg = Sound.env(oo, t+k*0.07, 0.34, 0.004, 0.16); gg.connect(Sound.sfxGain);
+          oo.start(t+k*0.07); oo.stop(t+k*0.07+0.22);
+        });
+        break;
+      case "portal":
+        o = this.ctx.createOscillator(); o.type = "sawtooth";
+        o.frequency.setValueAtTime(180, t);
+        o.frequency.exponentialRampToValueAtTime(1500, t+0.22);
+        f = this.ctx.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 6;
+        f.frequency.setValueAtTime(400, t);
+        f.frequency.exponentialRampToValueAtTime(2600, t+0.22);
+        o.connect(f);
+        g = this.env(f, t, 0.3, 0.01, 0.24); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.3);
+        break;
+      case "win":
+        [523, 659, 784, 1047].forEach(function(hz, k){
+          var oo = Sound.ctx.createOscillator(); oo.type = "triangle"; oo.frequency.value = hz;
+          var gg = Sound.env(oo, t+k*0.09, 0.32, 0.006, 0.3); gg.connect(Sound.sfxGain);
+          oo.start(t+k*0.09); oo.stop(t+k*0.09+0.4);
+        });
+        break;
+      case "click":
+        o = this.ctx.createOscillator(); o.type = "square"; o.frequency.value = 880;
+        g = this.env(o, t, 0.12, 0.002, 0.05); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.08);
+        break;
+    }
+  }
+};

@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Neon Dash level",
+  "type": "object",
+  "required": [
+    "meta",
+    "objects"
+  ],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "bpm",
+        "startMode",
+        "startSpeed"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "difficulty": {
+          "enum": [
+            "easy",
+            "normal",
+            "hard",
+            "harder",
+            "insane",
+            "demon"
+          ]
+        },
+        "bpm": {
+          "type": "number",
+          "description": "used to snap objects to the beat grid"
+        },
+        "music": {
+          "type": "string",
+          "description": "path to the audio file, relative to index.html"
+        },
+        "musicOffsetMs": {
+          "type": "number"
+        },
+        "startMode": {
+          "enum": [
+            "cube",
+            "ship",
+            "ball",
+            "ufo",
+            "wave",
+            "robot"
+          ]
+        },
+        "startSpeed": {
+          "enum": [
+            0.807,
+            1,
+            1.243,
+            1.502,
+            1.849
+          ]
+        },
+        "lengthBlocks": {
+          "type": "number"
+        },
+        "bgColor": {
+          "type": "string"
+        },
+        "groundColor": {
+          "type": "string"
+        }
+      }
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "t",
+          "x",
+          "y"
+        ],
+        "properties": {
+          "t": {
+            "type": "string",
+            "description": "object type id, see assets/README.md"
+          },
+          "x": {
+            "type": "number",
+            "description": "grid units from level start"
+          },
+          "y": {
+            "type": "number",
+            "description": "grid units above the floor line (0 = resting on floor)"
+          },
+          "rot": {
+            "enum": [
+              0,
+              90,
+              180,
+              270
+            ]
+          },
+          "scale": {
+            "type": "number"
+          },
+          "flip": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

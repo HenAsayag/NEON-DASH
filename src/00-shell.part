@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#140B2E">
+<title>NEON DASH</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{
+    width:100%;height:100%;overflow:hidden;background:#0A0518;
+    color:#F6F2FF;font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+    touch-action:none;overscroll-behavior:none;
+  }
+  #wrap{position:fixed;inset:0}
+  canvas#game{display:block;width:100%;height:100%;touch-action:none}
+  /* Portrait nag on phones. The game keeps running underneath. */
+  #rotate{
+    position:fixed;inset:0;display:none;place-items:center;text-align:center;
+    background:rgba(10,5,24,.94);z-index:40;padding:24px;font-size:18px;letter-spacing:.08em;
+  }
+  #rotate b{display:block;font-size:26px;color:#2DE2E6;margin-bottom:10px;letter-spacing:.2em}
+  @media (orientation:portrait) and (pointer:coarse){ #rotate{display:grid} }
+  /* The only DOM the game uses: a textarea for level import/export. */
+  #io{
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:min(760px,92vw);height:min(520px,70vh);display:none;z-index:50;
+    background:#12082a;color:#cfe;border:2px solid #2DE2E6;border-radius:10px;
+    padding:12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;resize:none;
+    box-shadow:0 0 60px rgba(45,226,230,.35)
+  }
+  #io.on{display:block}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<div id="rotate"><div><b>NEON DASH</b>Rotate your device to landscape</div></div>
+<textarea id="io" spellcheck="false"></textarea>
+<script>
+"use strict";
+/* ==========================================================================
+   NEON DASH - a one-button rhythm platformer.
+   Single file, Canvas 2D, no build step, no dependencies, runs from file://.
+
+   Layout of this file:
+     CORE      constants, object table, level data, level parsing,
+               collision and the deterministic physics step   (headless-safe)
+     Assets    sprite loading + procedural fallbacks
+     Input     keyboard / mouse / touch with a tap buffer
+     Audio     WebAudio: synthesised music, SFX, analyser
+     Particles trail, explosion, sparks
+     Renderer  background -> world -> player -> particles -> HUD
+     Save      localStorage with a memory fallback
+     Scenes    menu / select / play / pause / end / settings / editor
+     Game      fixed-step accumulator loop, decoupled render
+   ========================================================================== */

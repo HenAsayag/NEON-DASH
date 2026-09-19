@@ -1,0 +1,81 @@
+
+/* ==========================================================================
+   Particles. A fixed pool that is allocated once and then only ever mutated,
+   so a hundred deaths in a row cost nothing in garbage collection.
+   ========================================================================== */
+
+var Particles = {
+  pool: [], n: 0, cursor: 0,
+
+  init: function(max){
+    this.n = max || 700;
+    this.pool.length = 0;
+    for(var i=0;i<this.n;i++){
+      this.pool.push({ live:false, x:0,y:0, vx:0,vy:0, life:0, max:1,
+                       size:4, col:"#fff", kind:0, rot:0, spin:0, drag:0.98, grav:0 });
+    }
+  },
+
+  spawn: function(x,y,vx,vy,life,size,col,kind,grav){
+    var p = this.pool[this.cursor];
+    this.cursor = (this.cursor+1) % this.n;
+    p.live = true; p.x = x; p.y = y; p.vx = vx; p.vy = vy;
+    p.life = life; p.max = life; p.size = size; p.col = col;
+    p.kind = kind||0; p.rot = Math.random()*6.28; p.spin = (Math.random()-0.5)*12;
+    p.grav = grav === undefined ? -900 : grav;
+    p.drag = 0.985;
+    return p;
+  },
+
+  burst: function(x,y,col,count,power){
+    var amt = Math.round(count * Save.data.settings.particles);
+    for(var i=0;i<amt;i++){
+      var a = Math.random()*6.2832, s = power*(0.25+Math.random()*0.95);
+      this.spawn(x, y, Math.cos(a)*s, Math.sin(a)*s,
+                 0.4+Math.random()*0.55, 3+Math.random()*7, col, i%3===0?1:0);
+    }
+  },
+
+  trail: function(x,y,col,vx){
+    if(Save.data.settings.particles <= 0) return;
+    this.spawn(x, y, -vx*0.12+(Math.random()-0.5)*40, (Math.random()-0.5)*50,
+               0.3+Math.random()*0.25, 3+Math.random()*4, col, 0, -140);
+  },
+
+  update: function(dt){
+    for(var i=0;i<this.n;i++){
+      var p = this.pool[i];
+      if(!p.live) continue;
+      p.life -= dt;
+      if(p.life <= 0){ p.live = false; continue; }
+      p.vy += p.grav*dt;
+      p.vx *= p.drag; p.vy *= p.drag;
+      p.x += p.vx*dt; p.y += p.vy*dt;
+      p.rot += p.spin*dt;
+    }
+  },
+
+  clear: function(){ for(var i=0;i<this.n;i++) this.pool[i].live = false; },
+
+  draw: function(g, view){
+    var s = view.scale, H = view.h;
+    for(var i=0;i<this.n;i++){
+      var p = this.pool[i];
+      if(!p.live) continue;
+      var a = p.life/p.max;
+      var sx = (p.x - view.camX)*s, sy = H - (p.y - view.camY)*s;
+      if(sx < -40 || sx > view.w+40) continue;
+      g.globalAlpha = a*a;
+      g.fillStyle = p.col;
+      var sz = p.size*s*(0.35+a*0.65);
+      if(p.kind === 1){
+        g.save(); g.translate(sx,sy); g.rotate(p.rot);
+        g.fillRect(-sz/2,-sz/2,sz,sz);
+        g.restore();
+      } else {
+        g.beginPath(); g.arc(sx, sy, sz/2, 0, 6.2832); g.fill();
+      }
+    }
+    g.globalAlpha = 1;
+  }
+};

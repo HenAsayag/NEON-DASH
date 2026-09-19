@@ -1,0 +1,272 @@
+
+/* --------------------------------------------------------------------------
+   The six gamemodes, the interactive objects, and the fixed physics step.
+   Gravity is signed: e.grav = +1 pulls toward -y, -1 pulls toward +y, so every
+   rule below reads the same whichever way up the player is.
+   -------------------------------------------------------------------------- */
+
+function ev(sim, type, e, extra){
+  sim.events.push({ type:type, x:e.x, y:e.y, mode:e.mode, extra:extra });
+}
+function clampFall(e, maxFall){
+  if(e.vy*e.grav < -maxFall) e.vy = -maxFall*e.grav;
+}
+function kill(sim, e){
+  if(!e.alive) return;
+  e.alive = false; sim.dead = true;
+  sim.deathX = e.x; sim.deathY = e.y;
+  ev(sim, "death", e);
+}
+
+function applyBoost(sim, e, def){
+  if(def.dash){                       // dash orb: straight line until you let go
+    e.dashing = true; e.dashT = sim.t; e.vy = 0;
+    e.onGround = false; e.groundT = -99;
+    return;
+  }
+  e.dashing = false;
+  if(def.flip) e.grav = -e.grav;
+  if(def.jump){
+    var g = entGravity(e);
+    e.vy = impulseFor(def.jump, g) * e.grav;
+  }
+  e.onGround = false; e.groundT = -99;
+}
+
+/* Size and mode changes keep the player's feet where they were, so a portal
+   never drops you into the floor or pops you through a ceiling. */
+function reshape(e, apply){
+  var ob = entBox(e);
+  var foot = e.grav>0 ? e.y-ob.h/2 : e.y+ob.h/2;
+  apply();
+  var nb = entBox(e);
+  e.y = e.grav>0 ? foot+nb.h/2 : foot-nb.h/2;
+}
+
+function applyPortal(sim, e, def){
+  var ents = sim.ents, i;
+  if(def.mode && def.mode !== e.mode){
+    for(i=0;i<ents.length;i++){
+      (function(t){ reshape(t, function(){ t.mode = def.mode; }); t.vy = 0; t.dashing = false; })(ents[i]);
+    }
+    ev(sim, "portal", e, def.mode);
+  }
+  if(def.grav !== undefined){
+    for(i=0;i<ents.length;i++){
+      var want = ents[i].mirror ? -def.grav : def.grav;
+      if(ents[i].grav !== want){ ents[i].grav = want; ents[i].onGround = false; ents[i].groundT = -99; }
+    }
+    ev(sim, "portal", e, "gravity");
+  }
+  if(def.mini !== undefined && def.mini !== e.mini){
+    for(i=0;i<ents.length;i++){
+      (function(t){ reshape(t, function(){ t.mini = def.mini; }); })(ents[i]);
+    }
+    ev(sim, "portal", e, def.mini?"mini":"big");
+  }
+  if(def.speed){
+    for(i=0;i<ents.length;i++) ents[i].speed = def.speed;
+    ev(sim, "speed", e, def.speed);
+  }
+  if(def.mirror){ sim.mirrorView = !sim.mirrorView; ev(sim, "mirror", e); }
+  if(def.dual){
+    if(sim.ents.length === 1){
+      var c = {}; for(var k in e) c[k] = e[k];
+      c.mirror = true;
+      c.grav = -e.grav;
+      c.y = PHYS.CEIL_BLOCKS*PHYS.UNIT - e.y;
+      c.vy = -e.vy;
+      c.nearOrb = -1; c.padCd = -1; c.onGround = false; c.groundT = -99;
+      sim.ents.push(c);
+    } else {
+      for(i=sim.ents.length-1;i>0;i--) if(sim.ents[i].mirror) sim.ents.splice(i,1);
+    }
+    ev(sim, "portal", e, "dual");
+  }
+}
+
+function checkHazards(sim, e, pw, ph){
+  var hw=pw/2, hh=ph/2, list=sim.level.hazards;
+  for(var i=lowerBound(list, e.x-hw); i<list.length; i++){
+    var z = list[i];
+    if(z.x0 > e.x+hw) break;
+    if(z.r !== undefined){
+      var nx = clamp(z.cx, e.x-hw, e.x+hw) - z.cx;
+      var ny = clamp(z.cy, e.y-hh, e.y+hh) - z.cy;
+      if(nx*nx + ny*ny <= z.r*z.r) return true;
+    } else if(e.x+hw > z.x0 && e.x-hw < z.x1 && e.y+hh > z.y0 && e.y-hh < z.y1){
+      return true;
+    }
+  }
+  return false;
+}
+
+function checkTriggers(sim, e, pw, ph){
+  var hw=pw/2, hh=ph/2, list=sim.level.triggers;
+  for(var i=lowerBound(list, e.x-hw); i<list.length; i++){
+    var tr = list[i];
+    if(tr.x0 > e.x+hw) break;
+    var over;
+    if(tr.r !== undefined){
+      var nx = clamp(tr.cx, e.x-hw, e.x+hw) - tr.cx;
+      var ny = clamp(tr.cy, e.y-hh, e.y+hh) - tr.cy;
+      over = (nx*nx + ny*ny <= tr.r*tr.r);
+    } else {
+      over = (e.x+hw > tr.x0 && e.x-hw < tr.x1 && e.y+hh > tr.y0 && e.y-hh < tr.y1);
+    }
+    if(!over) continue;
+
+    var o = tr.o, def = o.def, idx = o.idx;
+    switch(tr.kind){
+      case "coin":
+        if(!sim.used[idx]){ sim.used[idx]=1; sim.coins[tr.slot]=1; ev(sim,"coin",e); }
+        break;
+      case "pad":
+        // Pads fire on touch. A short cooldown stops one pad firing every step.
+        if(e.padCd !== idx || sim.t - e.padCdT > 0.30){
+          applyBoost(sim, e, def); e.padCd = idx; e.padCdT = sim.t; ev(sim,"pad",e,o.t);
+        }
+        break;
+      case "orb":
+        // Orbs fire only if the button is down while touching them. Remember the
+        // contact so a tap up to TAP_BUFFER later still counts (see below).
+        e.nearOrb = idx; e.nearOrbT = sim.t;
+        if(!sim.used[idx] && (sim.hold || sim.t - sim.lastTapT <= PHYS.TAP_BUFFER)){
+          sim.used[idx]=1; applyBoost(sim, e, def); ev(sim,"orb",e,o.t);
+        }
+        break;
+      case "portal":
+        if(!sim.used[idx]){ sim.used[idx]=1; applyPortal(sim, e, def); }
+        break;
+      case "finish":
+        sim.won = true; ev(sim,"win",e);
+        break;
+    }
+  }
+  // Late half of the orb buffer: a tap just after leaving an orb still counts.
+  if(sim.pressed && e.nearOrb >= 0 && !sim.used[e.nearOrb] &&
+     sim.t - e.nearOrbT <= PHYS.TAP_BUFFER){
+    var ro = sim.level.objects[e.nearOrb];
+    sim.used[e.nearOrb] = 1; applyBoost(sim, e, ro.def); ev(sim,"orb",e,ro.t);
+  }
+}
+
+function updateRotation(sim, e, dt){
+  switch(e.mode){
+    case "cube": case "robot":
+      if(e.onGround){
+        var snap = Math.round(e.rot/90)*90;
+        e.rot += (snap-e.rot) * Math.min(1, dt*22);
+      } else {
+        e.rot += PHYS.CUBE.rotDegPerSec*dt*e.grav;
+      }
+      break;
+    case "ball":
+      e.rot += (e.vx/(PHYS.UNIT*0.5))*(180/Math.PI)*dt*e.grav*0.5;
+      break;
+    case "ship": case "ufo":
+      var want = clamp(e.vy/PHYS.SHIP.maxUp, -1, 1)*PHYS.SHIP.tiltMaxDeg*e.grav;
+      e.tilt += (want-e.tilt)*Math.min(1, dt*14);
+      e.rot = -e.tilt;            // rot is stored screen-clockwise, so nose up when rising
+      break;
+    case "wave":
+      e.rot = (sim.hold ? -45 : 45)*e.grav;
+      break;
+  }
+}
+
+function stepEntity(sim, e, dt){
+  var g = entGravity(e);
+  var miniJ = e.mini ? PHYS.MINI.jumpVMul : 1;
+  e.vx = PHYS.BASE_VX*e.speed;
+
+  if(e.dashing){
+    // Dash orb: a flat line, gravity suspended, until release or timeout.
+    e.vy = 0;
+    if(!sim.hold || sim.t - e.dashT > 1.2) e.dashing = false;
+  } else {
+    var canJump = (e.onGround || sim.t-e.groundT < PHYS.COYOTE) && e.vy*e.grav <= 1;
+    switch(e.mode){
+
+      case "cube":
+        if(sim.hold && canJump){
+          e.vy = PHYS.CUBE.jumpV*miniJ*e.grav;
+          e.onGround = false; e.groundT = -99; ev(sim,"jump",e);
+        } else {
+          e.vy -= g*e.grav*dt;
+        }
+        clampFall(e, PHYS.CUBE.maxFall);
+        break;
+
+      case "robot":
+        if(sim.hold && canJump){
+          e.vy = PHYS.ROBOT.jumpV*miniJ*e.grav;
+          e.robotT = sim.t; e.robotHeld = true;
+          e.onGround = false; e.groundT = -99; ev(sim,"jump",e);
+        } else {
+          // Holding keeps gravity light for up to maxChargeSec: ~1.37x the height.
+          var gm = 1;
+          if(e.robotHeld && sim.hold && sim.t-e.robotT < PHYS.ROBOT.maxChargeSec && e.vy*e.grav > 0) gm = 0.73;
+          else e.robotHeld = false;
+          e.vy -= g*gm*e.grav*dt;
+        }
+        clampFall(e, PHYS.CUBE.maxFall);
+        break;
+
+      case "ball":
+        if(sim.pressed && canJump && sim.t-e.ballCd > PHYS.BALL.flipCooldown){
+          e.grav = -e.grav; e.vy = 0; e.ballCd = sim.t;
+          e.onGround = false; e.groundT = -99; ev(sim,"flip",e);
+        }
+        e.vy -= g*e.grav*dt;
+        clampFall(e, PHYS.BALL.maxFall);
+        break;
+
+      case "ufo":
+        if(sim.pressed){
+          e.vy = PHYS.UFO.impulse*miniJ*e.grav;
+          e.onGround = false; e.groundT = -99; ev(sim,"jump",e);
+        }
+        e.vy -= g*e.grav*dt;
+        clampFall(e, PHYS.UFO.maxFall);
+        break;
+
+      case "ship":
+        e.vy += (sim.hold ? PHYS.SHIP.thrust : -PHYS.SHIP.gravity)*e.grav*dt*(e.mini?1.12:1);
+        if(e.vy*e.grav >  PHYS.SHIP.maxUp)   e.vy =  PHYS.SHIP.maxUp*e.grav;
+        if(e.vy*e.grav < -PHYS.SHIP.maxDown) e.vy = -PHYS.SHIP.maxDown*e.grav;
+        break;
+
+      case "wave":
+        // No inertia at all: a fixed diagonal, direction chosen by the button.
+        e.vy = (sim.hold?1:-1)*e.vx*(e.mini?PHYS.WAVE.miniSlopeRatio:PHYS.WAVE.slopeRatio)*e.grav;
+        break;
+    }
+  }
+
+  var b = entBox(e);
+  var res = moveAndCollide(sim, e, dt);
+
+  if(res.landed){ e.onGround = true; e.groundT = sim.t; }
+  else {
+    var probe = sweepWorld(sim, e.x, e.y, b.w, b.h, 0, -1.6*e.grav);
+    if(probe && probe.ny*e.grav > 0){ e.onGround = true; e.groundT = sim.t; }
+    else e.onGround = false;
+  }
+
+  if(res.fatal){ kill(sim, e); return; }
+  if(checkHazards(sim, e, b.w, b.h)){ kill(sim, e); return; }
+  checkTriggers(sim, e, b.w, b.h);
+  updateRotation(sim, e, dt);
+  if(e.y < PHYS.DEATH_FLOOR*PHYS.UNIT || e.y > (PHYS.CEIL_BLOCKS-PHYS.DEATH_FLOOR)*PHYS.UNIT) kill(sim, e);
+}
+
+function stepSim(sim, dt){
+  if(sim.dead || sim.won){ sim.t += dt; return; }
+  sim.t += dt;
+  for(var i=0;i<sim.ents.length;i++){
+    var e = sim.ents[i];
+    if(e.alive) stepEntity(sim, e, dt);
+  }
+  sim.progress = clamp(sim.ents[0].x / sim.level.finishX, 0, 1);
+}

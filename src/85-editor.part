@@ -1,0 +1,247 @@
+
+/* ==========================================================================
+   Level editor. Snap-to-grid placement, a palette, instant testing, and
+   import/export through the same JSON schema the shipped levels use, so a
+   level built here drops straight into assets/levels/.
+   ========================================================================== */
+
+var EDITOR_PALETTE = [
+  "spike","spike-mini","spike-triple","block","block-half","slope","saw",
+  "pad-yellow","pad-pink","pad-red","pad-blue",
+  "orb-yellow","orb-pink","orb-red","orb-blue","orb-green","orb-dash",
+  "coin",
+  "portal-cube","portal-ship","portal-ball","portal-ufo","portal-wave","portal-robot",
+  "portal-gravity-up","portal-gravity-down","portal-mini","portal-big",
+  "portal-dual","portal-mirror",
+  "speed-slow","speed-normal","speed-fast","speed-faster",
+  "finish"
+];
+
+var Editor = {
+  src: null, level: null, sim: null,
+  camX: 0, sel: 0, rot: 0,
+  io: null, ioMode: null, returnScene: "select",
+
+  init: function(){
+    this.io = document.getElementById("io");
+    var self = this;
+    // A saved draft survives reloads; it is kept separately from progress.
+    try {
+      var raw = localStorage.getItem("neon-dash-editor-v1");
+      if(raw) this.draft = JSON.parse(raw);
+    } catch(e){}
+  },
+
+  open: function(srcLevel){
+    this.src = JSON.parse(JSON.stringify(srcLevel || this.draft || {
+      meta:{ id:"custom", name:"My Level", difficulty:"normal", bpm:128,
+             musicOffsetMs:0, startMode:"cube", startSpeed:1, lengthBlocks:120,
+             bgColor:"#140B2E", groundColor:"#241148" },
+      objects:[]
+    }));
+    this.camX = 0;
+    this.rebuild();
+    Game.scene = "editor";
+  },
+
+  rebuild: function(){
+    this.level = parseLevel(this.src);
+    this.sim = createSim(this.level);   // only for the used[] flags drawWorld reads
+  },
+
+  save: function(){
+    this.draft = JSON.parse(JSON.stringify(this.src));
+    try { localStorage.setItem("neon-dash-editor-v1", JSON.stringify(this.draft)); setHint("Draft saved"); }
+    catch(e){ setHint("Storage blocked - could not save"); }
+  },
+
+  showIO: function(mode){
+    this.ioMode = mode;
+    this.io.classList.add("on");
+    this.io.value = (mode === "export") ? JSON.stringify(this.src, null, 2) : "";
+    this.io.readOnly = (mode === "export");
+    this.io.focus();
+    if(mode === "export") this.io.select();
+  },
+
+  hideIO: function(commit){
+    if(commit && this.ioMode === "import"){
+      try {
+        var parsed = JSON.parse(this.io.value);
+        if(!parsed.meta || !parsed.objects) throw new Error("missing meta/objects");
+        this.src = parsed;
+        this.rebuild();
+        setHint("Imported " + parsed.objects.length + " objects");
+      } catch(err){ setHint("Import failed: " + err.message); }
+    }
+    this.io.classList.remove("on");
+    this.io.blur();
+    this.ioMode = null;
+  },
+
+  test: function(){
+    // Testing swaps the edited level in without touching the shipped three.
+    var lv = parseLevel(this.src);
+    Game.level = lv;
+    Game.practice = false;
+    Game.checkpoints = [];
+    Game.attempts = 0;
+    Sound.setLevel(lv);
+    View.smoothY = null;
+    retry(true);
+    Game.scene = "play";
+    Game.editorReturn = true;
+  }
+};
+
+function sceneEditor(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H), U = PHYS.UNIT;
+  var E = Editor;
+  if(!E.src){ E.open(null); return; }
+  UI.click = Input.takeClick();
+
+  /* ---- view: free pan, no player to follow --------------------------- */
+  var scale = Math.max(H/(16.5*U), W/(34*U));
+  var view = { scale:scale, camX:E.camX, camY:-2*U, w:W, h:H,
+               viewW:W/scale, viewH:H/scale, shakeX:0, shakeY:0 };
+
+  var panSpeed = 18*U*dt;
+  if(Input.key("ArrowRight") || Input.key("KeyD")) E.camX += panSpeed;
+  if(Input.key("ArrowLeft")  || Input.key("KeyA")) E.camX -= panSpeed;
+  E.camX = Math.max(-4*U, E.camX);
+
+  /* ---- keyboard --------------------------------------------------------- */
+  if(E.ioMode){
+    if(keyPressed("Escape")) E.hideIO(false);
+    if(keyPressed("Enter") && E.ioMode === "import") E.hideIO(true);
+  } else {
+    if(keyPressed("Escape")){ Game.scene = E.returnScene; return; }
+    if(keyPressed("BracketRight")) E.sel = (E.sel+1) % EDITOR_PALETTE.length;
+    if(keyPressed("BracketLeft"))  E.sel = (E.sel-1+EDITOR_PALETTE.length) % EDITOR_PALETTE.length;
+    if(keyPressed("KeyR")) E.rot = (E.rot+90) % 360;
+    if(keyPressed("KeyT")) { E.test(); return; }
+    if(keyPressed("KeyS")) E.save();
+    if(keyPressed("KeyE")) E.showIO("export");
+    if(keyPressed("KeyI")) E.showIO("import");
+  }
+
+  drawBackground(g, view, E.level, GameTime, 0);
+  drawGround(g, view, E.level, GameTime, 0);
+  drawWorld(g, view, E.level, E.sim, GameTime);
+
+  /* ---- grid ------------------------------------------------------------- */
+  g.save();
+  g.globalAlpha = 0.16; g.strokeStyle = COLORS.ink; g.lineWidth = 1;
+  g.beginPath();
+  var gx0 = Math.floor(view.camX/U)*U;
+  for(var wx=gx0; wx < view.camX+view.viewW+U; wx+=U){
+    var sx = toX(view, wx); g.moveTo(sx, 0); g.lineTo(sx, H);
+  }
+  for(var wy=0; wy <= (PHYS.CEIL_BLOCKS+1)*U; wy+=U){
+    var sy = toY(view, wy); g.moveTo(0, sy); g.lineTo(W, sy);
+  }
+  g.stroke();
+  g.restore();
+
+  /* ---- palette strip ----------------------------------------------------- */
+  var ph = Math.max(44, S*0.085), py = H - ph - 6;
+  g.fillStyle = "rgba(10,5,24,.88)"; g.fillRect(0, py-4, W, ph+10);
+  g.strokeStyle = "rgba(45,226,230,.35)"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, py-4); g.lineTo(W, py-4); g.stroke();
+
+  // The palette is wider than any screen, so it scrolls to keep the selected
+  // entry centred, clamped so neither end can be scrolled past.
+  var cell = ph*0.86, pad = cell*0.16, total = EDITOR_PALETTE.length;
+  var step = cell+pad, fullW = total*step;
+  var startX = (fullW <= W-16) ? (W-fullW)/2
+             : clamp(W/2 - (E.sel+0.5)*step, W-fullW-8, 8);
+  var overPalette = Input.pointer.y >= py-4;
+  for(var i=0;i<total;i++){
+    var x = startX + i*(cell+pad), y = py + (ph-cell)/2;
+    if(x+cell < 0 || x > W) continue;
+    var on = (i === E.sel);
+    roundRect(g, x, y, cell, cell, cell*0.16);
+    g.fillStyle = on ? "rgba(45,226,230,.25)" : "rgba(36,17,72,.7)"; g.fill();
+    g.strokeStyle = on ? COLORS.cyan : "rgba(246,242,255,.22)"; g.lineWidth = on?2:1; g.stroke();
+    var key = EDITOR_PALETTE[i];
+    if(key !== "finish"){
+      var d = OBJ[key], iw = cell*0.74, ih = iw*(d.h/d.w);
+      if(ih > cell*0.8){ ih = cell*0.8; iw = ih*(d.w/d.h); }
+      g.save(); g.translate(x+(cell-iw)/2, y+(cell-ih)/2);
+      g.drawImage(Assets.get(d.sprite, iw) || ProcCache.get(d.sprite, iw, ih), 0, 0, iw, ih);
+      g.restore();
+    } else {
+      txt(g, "END", x+cell/2, y+cell/2, cell*0.28, COLORS.lime, "center");
+    }
+    if(overPalette && UI_clickAt(x, y, cell, cell)) E.sel = i;
+  }
+
+  /* ---- cursor and placement ----------------------------------------------- */
+  var p = Input.pointer;
+  if(!overPalette && !E.ioMode){
+    var wxg = Math.floor((p.x/scale + view.camX)/U);
+    var wyg = Math.floor(((H - p.y)/scale + view.camY)/U);
+    wyg = clamp(wyg, 0, PHYS.CEIL_BLOCKS);
+    var key2 = EDITOR_PALETTE[E.sel];
+    var d2 = key2 === "finish" ? OBJ["finish"] : OBJ[key2];
+
+    g.save(); g.globalAlpha = 0.55;
+    var sx2 = toX(view, wxg*U), sy2 = toY(view, (wyg+d2.h)*U);
+    g.strokeStyle = COLORS.gold; g.lineWidth = 2;
+    g.strokeRect(sx2, sy2, d2.w*U*scale, d2.h*U*scale);
+    if(d2.sprite){
+      g.translate(sx2, sy2);
+      var gw = d2.w*U*scale, gh = d2.h*U*scale;
+      g.drawImage(Assets.get(d2.sprite, gw) || ProcCache.get(d2.sprite, gw, gh), 0, 0, gw, gh);
+    }
+    g.restore();
+
+    if(UI.click || (Input.pointer.down && Input.key("ShiftLeft"))){
+      var erase = Input.key("ShiftLeft") || Input.key("ShiftRight");
+      var idx = -1;
+      for(var o=0;o<E.src.objects.length;o++){
+        var ob = E.src.objects[o], od = OBJ[ob.t];
+        if(!od) continue;
+        if(wxg >= ob.x && wxg < ob.x+od.w && wyg >= ob.y && wyg < ob.y+od.h){ idx = o; break; }
+      }
+      if(erase){
+        if(idx >= 0){ E.src.objects.splice(idx,1); E.rebuild(); }
+      } else {
+        if(idx >= 0) E.src.objects.splice(idx,1);
+        var no = { t:key2, x:wxg, y:wyg };
+        if(E.rot) no.rot = E.rot;
+        E.src.objects.push(no);
+        if(key2 === "finish") E.src.meta.lengthBlocks = wxg;
+        else E.src.meta.lengthBlocks = Math.max(E.src.meta.lengthBlocks||0, wxg+6);
+        E.rebuild();
+      }
+    }
+  }
+  UI.click = false;
+
+  /* ---- header ------------------------------------------------------------- */
+  var hs = Math.max(11, S*0.024);
+  g.fillStyle = "rgba(10,5,24,.8)"; g.fillRect(0,0,W,hs*3.1);
+  txt(g, "EDITOR  -  " + E.src.meta.name, 10, hs*1.0, hs*1.1, COLORS.ink, "left", COLORS.cyan);
+  txt(g, EDITOR_PALETTE[E.sel] + (E.rot?"  rot "+E.rot:"") +
+         "   |   " + E.src.objects.length + " objects   |   block " +
+         Math.round(E.camX/U), 10, hs*2.2, hs*0.92, "rgba(246,242,255,.7)", "left", null, "normal");
+  txt(g, "[ ] type   R rotate   shift+click erase   T test   S save   E export   I import   esc back",
+      W-10, hs*1.6, hs*0.85, "rgba(246,242,255,.55)", "right", null, "normal");
+
+  if(E.ioMode){
+    txt(g, E.ioMode === "export" ? "Copy this JSON (esc to close)"
+                                 : "Paste level JSON, then Enter (esc to cancel)",
+        W/2, H*0.10, hs*1.2, COLORS.gold, "center", COLORS.gold);
+  }
+  if(Game.hintT > 0){
+    Game.hintT -= dt;
+    txt(g, Game.hint, W/2, H - ph - hs*2.4, hs*1.05, COLORS.ink, "center", COLORS.violet);
+  }
+}
+
+/* Hit test against the click that beginUI() latched for this frame. */
+function UI_clickAt(x,y,w,h){
+  var p = Input.pointer;
+  return UI.click && p.x>=x && p.x<=x+w && p.y>=y && p.y<=y+h;
+}

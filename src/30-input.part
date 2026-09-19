@@ -1,0 +1,136 @@
+
+/* ==========================================================================
+   Input. Space / Up / W / left click / touch are all the same button. The
+   press edge is latched rather than sampled, so a tap that lands between two
+   render frames still reaches the physics.
+   ========================================================================== */
+
+var Input = {
+  down: false,
+  pressLatch: false,        // consumed by the first physics substep after a press
+  keys: {},
+  pointer: { x:0, y:0, down:false, clicked:false },
+  // Only jump is rebindable. Esc/R/P/Z/X/H are fixed and read directly.
+  binds: { jump:["Space","ArrowUp","KeyW"] },
+  onKey: null,              // scene-level hook, currently unused by the shipped scenes
+
+  init: function(canvas){
+    var self = this;
+
+    function isJump(code){ return self.binds.jump.indexOf(code) >= 0; }
+
+    addEventListener("keydown", function(ev){
+      if(ev.repeat){ if(isJump(ev.code)) ev.preventDefault(); return; }
+      self.keys[ev.code] = true;
+      if(isJump(ev.code)){ self.press(); ev.preventDefault(); }
+      if(ev.code === "Space" || ev.code === "ArrowUp" || ev.code === "ArrowDown") ev.preventDefault();
+      if(self.onKey) self.onKey(ev.code, ev);
+    });
+    addEventListener("keyup", function(ev){
+      self.keys[ev.code] = false;
+      if(isJump(ev.code)) self.release();
+    });
+    addEventListener("blur", function(){ self.keys = {}; self.release(); });
+
+    function pos(ev){
+      var r = canvas.getBoundingClientRect();
+      self.pointer.x = (ev.clientX - r.left) * (canvas.width / r.width);
+      self.pointer.y = (ev.clientY - r.top)  * (canvas.height / r.height);
+    }
+    canvas.addEventListener("mousedown", function(ev){
+      if(ev.button !== 0) return;
+      pos(ev); self.pointer.down = true; self.pointer.clicked = true; self.press();
+    });
+    addEventListener("mouseup", function(ev){ self.pointer.down = false; self.release(); });
+    canvas.addEventListener("mousemove", pos);
+
+    // Multi-touch: the button is down while any finger is on the screen.
+    var touches = 0;
+    canvas.addEventListener("touchstart", function(ev){
+      ev.preventDefault();
+      touches = ev.touches.length;
+      if(ev.changedTouches[0]) pos(ev.changedTouches[0]);
+      self.pointer.down = true; self.pointer.clicked = true; self.press();
+    }, {passive:false});
+    canvas.addEventListener("touchend", function(ev){
+      ev.preventDefault();
+      touches = ev.touches.length;
+      if(touches === 0){ self.pointer.down = false; self.release(); }
+    }, {passive:false});
+    canvas.addEventListener("touchmove", function(ev){ ev.preventDefault(); }, {passive:false});
+    canvas.addEventListener("contextmenu", function(ev){ ev.preventDefault(); });
+  },
+
+  /* Rebuilds the jump binding from the saved setting. W and Up stay available
+     alongside the chosen key, and mouse/touch are never rebindable, so no
+     choice here can lock the player out of jumping. */
+  applyBinds: function(){
+    var k = (Save.data && Save.data.settings.jumpKey) || "Space";
+    var list = [k];
+    if(list.indexOf("ArrowUp") < 0) list.push("ArrowUp");
+    if(list.indexOf("KeyW") < 0) list.push("KeyW");
+    this.binds.jump = list;
+  },
+
+  press: function(){ if(!this.down){ this.down = true; this.pressLatch = true; } },
+  release: function(){ this.down = false; },
+
+  /* True exactly once per press, on the first physics substep that asks. */
+  takePress: function(){ var p = this.pressLatch; this.pressLatch = false; return p; },
+
+  /* True once per click, for menu buttons. */
+  takeClick: function(){ var c = this.pointer.clicked; this.pointer.clicked = false; return c; },
+
+  key: function(code){ return !!this.keys[code]; }
+};
+
+/* ==========================================================================
+   Save. localStorage can throw in private windows and under some file://
+   policies, so every access is guarded and the game falls back to a
+   memory-only record that simply does not survive a reload.
+   ========================================================================== */
+
+var Save = {
+  KEY: "neon-dash-save-v1",
+  data: null,
+  persistent: true,
+
+  defaults: function(){
+    return {
+      levels: {},              // id -> {best, completed, practiceBest, coins:[0,0,0], attempts}
+      totalAttempts: 0,
+      settings: {
+        music: 0.7, sfx: 0.8, particles: 1, showHitboxes: false, jumpKey: "Space",
+        highContrast: false, reducedMotion: false, autoRetry: true
+      }
+    };
+  },
+
+  load: function(){
+    var d = null;
+    try {
+      var raw = localStorage.getItem(this.KEY);
+      if(raw) d = JSON.parse(raw);
+    } catch(e){ this.persistent = false; }
+    this.data = d && d.levels ? d : this.defaults();
+    var def = this.defaults().settings;
+    for(var k in def) if(this.data.settings[k] === undefined) this.data.settings[k] = def[k];
+    return this.data;
+  },
+
+  flush: function(){
+    if(!this.persistent) return;
+    try { localStorage.setItem(this.KEY, JSON.stringify(this.data)); }
+    catch(e){ this.persistent = false; }
+  },
+
+  level: function(id){
+    var L = this.data.levels[id];
+    if(!L){
+      L = { best:0, completed:false, practiceBest:0, coins:[0,0,0], attempts:0 };
+      this.data.levels[id] = L;
+    }
+    if(!L.coins) L.coins = [0,0,0];
+    return L;
+  }
+};

@@ -1,0 +1,219 @@
+
+/* --------------------------------------------------------------------------
+   Simulation state. Everything that changes during an attempt lives here and
+   nothing else does, which is what makes cloneSim() enough for both practice
+   checkpoints and the offline solver's search tree.
+   -------------------------------------------------------------------------- */
+
+function makeEntity(level, mirror){
+  var m = MODES[level.meta.startMode] || MODES.cube;
+  var h = m.h*PHYS.UNIT*HITBOX_SHRINK;
+  return {
+    x: 0,
+    y: mirror ? PHYS.CEIL_BLOCKS*PHYS.UNIT - h/2 : h/2,
+    vx: PHYS.BASE_VX*(level.meta.startSpeed||1),
+    vy: 0,
+    mode: level.meta.startMode||"cube",
+    grav: mirror ? -1 : 1,
+    mini: false,
+    speed: level.meta.startSpeed||1,
+    mirror: !!mirror,
+    onGround: true, groundT: 0,
+    rot: 0, tilt: 0,
+    alive: true,
+    ballCd: -99, robotT: -99, robotHeld: false,
+    dashing: false, dashT: 0,
+    padCd: -1, padCdT: -99,
+    nearOrb: -1, nearOrbT: -99
+  };
+}
+
+function createSim(level){
+  return {
+    level: level,
+    t: 0,
+    ents: [ makeEntity(level, false) ],
+    used: new Uint8Array(level.objects.length),   // orbs and portals fire once per attempt
+    coins: [0,0,0],
+    dead: false, won: false,
+    deathX: 0, deathY: 0,
+    progress: 0,
+    mirrorView: false,
+    hold: false, pressed: false,
+    lastTapT: -99, lastReleaseT: -99,
+    events: []
+  };
+}
+
+function cloneSim(s){
+  var ents = new Array(s.ents.length);
+  for(var i=0;i<s.ents.length;i++){
+    var e = s.ents[i], c = {};
+    for(var k in e) c[k] = e[k];
+    ents[i] = c;
+  }
+  return {
+    level:s.level, t:s.t, ents:ents,
+    used: s.used.slice(0), coins: s.coins.slice(0),
+    dead:s.dead, won:s.won, deathX:s.deathX, deathY:s.deathY,
+    progress:s.progress, mirrorView:s.mirrorView,
+    hold:s.hold, pressed:false, lastTapT:s.lastTapT, lastReleaseT:s.lastReleaseT,
+    events: []
+  };
+}
+
+/* Feed the input edge. Call once per physics step, immediately before stepSim. */
+function simInput(sim, hold){
+  sim.pressed = hold && !sim.hold;
+  if(sim.pressed) sim.lastTapT = sim.t;
+  if(!hold && sim.hold) sim.lastReleaseT = sim.t;
+  sim.hold = hold;
+}
+
+function entBox(e){
+  var m = MODES[e.mode], s = e.mini ? PHYS.MINI.scale : 1;
+  return { w: m.w*PHYS.UNIT*s*HITBOX_SHRINK, h: m.h*PHYS.UNIT*s*HITBOX_SHRINK };
+}
+function entGravity(e){
+  var mul = e.mini ? PHYS.MINI.gravityMul : 1;
+  switch(e.mode){
+    case "ship": return PHYS.SHIP.gravity*mul;
+    case "ball": return PHYS.BALL.gravity*mul;
+    case "ufo":  return PHYS.UFO.gravity*mul;
+    default:     return PHYS.CUBE.gravity*mul;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Swept AABB. The player collapses to a point and the obstacle is inflated by
+   the player's half-extents, which reduces the test to a ray/box slab sweep.
+   The surface normal it returns is what separates a landing (vertical normal)
+   from a fatal wall hit (horizontal normal).
+   -------------------------------------------------------------------------- */
+function sweepPointBox(px,py,dx,dy, x0,y0,x1,y1){
+  var tmin=-Infinity, tmax=Infinity, nx=0, ny=0, a, b, s, tmp;
+
+  if(dx > -1e-9 && dx < 1e-9){
+    if(px <= x0 || px >= x1) return null;            // no overlap and no motion
+  } else {
+    a=(x0-px)/dx; b=(x1-px)/dx; s=-1;
+    if(a>b){ tmp=a; a=b; b=tmp; s=1; }
+    if(a>tmin){ tmin=a; nx=s; ny=0; }
+    if(b<tmax) tmax=b;
+  }
+  if(dy > -1e-9 && dy < 1e-9){
+    if(py <= y0 || py >= y1) return null;
+  } else {
+    a=(y0-py)/dy; b=(y1-py)/dy; s=-1;
+    if(a>b){ tmp=a; a=b; b=tmp; s=1; }
+    if(a>tmin){ tmin=a; nx=0; ny=s; }
+    if(b<tmax) tmax=b;
+  }
+  if(tmin > tmax || tmin >= 1 || tmax <= 0) return null;
+  if(tmin < 0) return null;                          // already inside; depenetrate deals with it
+  return { t:tmin, nx:nx, ny:ny };
+}
+
+var SWEEP_PLANES = [
+  {x0:-1e9, x1:1e9, y0:-1e9, y1:0, plane:"floor"},   // the ground
+  {x0:-1e9, x1:1e9, y0:0,    y1:1e9, plane:"roof"}   // y0 patched to the ceiling height
+];
+
+/* Earliest contact between the player box and any solid, including the two
+   world planes: the floor at y=0 and the roof at y=CEIL_BLOCKS. */
+function sweepWorld(sim, px, py, pw, ph, dx, dy){
+  var best=null, hw=pw/2, hh=ph/2, i, h2;
+  SWEEP_PLANES[1].y0 = PHYS.CEIL_BLOCKS*PHYS.UNIT;
+
+  for(i=0;i<2;i++){
+    var pl = SWEEP_PLANES[i];
+    h2 = sweepPointBox(px,py,dx,dy, pl.x0-hw, pl.y0-hh, pl.x1+hw, pl.y1+hh);
+    if(h2 && (!best || h2.t < best.t)){ best=h2; best.solid=pl; }
+  }
+  var list = sim.level.solids;
+  var minX = (dx<0 ? px+dx : px) - hw, maxX = (dx<0 ? px : px+dx) + hw;
+  for(i=lowerBound(list, minX); i<list.length; i++){
+    var s = list[i];
+    if(s.x0 > maxX) break;
+    h2 = sweepPointBox(px,py,dx,dy, s.x0-hw, s.y0-hh, s.x1+hw, s.y1+hh);
+    if(h2 && (!best || h2.t < best.t)){ best=h2; best.solid=s; }
+  }
+  return best;
+}
+
+/* Push the player out of anything it is already inside, along the shallowest
+   axis. A numerical safety net, mostly for the frame a size portal fires on. */
+function depenetrate(sim, e, pw, ph){
+  var hw=pw/2, hh=ph/2, ceil=PHYS.CEIL_BLOCKS*PHYS.UNIT;
+  if(e.y-hh < 0){ e.y = hh; if(e.vy<0) e.vy=0; }
+  if(e.y+hh > ceil){ e.y = ceil-hh; if(e.vy>0) e.vy=0; }
+  var list = sim.level.solids;
+  for(var i=lowerBound(list, e.x-hw); i<list.length; i++){
+    var s = list[i];
+    if(s.x0 > e.x+hw) break;
+    if(e.x+hw<=s.x0 || e.x-hw>=s.x1 || e.y+hh<=s.y0 || e.y-hh>=s.y1) continue;
+    var ox = Math.min(s.x1-(e.x-hw), (e.x+hw)-s.x0);
+    var oy = Math.min(s.y1-(e.y-hh), (e.y+hh)-s.y0);
+    if(oy <= ox){ e.y = (e.y > (s.y0+s.y1)/2) ? s.y1+hh : s.y0-hh; e.vy = 0; }
+    else       { e.x = (e.x > (s.x0+s.x1)/2) ? s.x1+hw : s.x0-hw; }
+  }
+}
+
+/* Ramps resolve as a height field rather than as boxes: cheaper, and it gives
+   the smooth climb-and-launch that makes slopes feel good instead of sticky. */
+function resolveSlopes(sim, e, ph){
+  var list = sim.level.slopes; if(!list.length) return false;
+  var hh = ph/2, on = false;
+  for(var i=lowerBound(list, e.x); i<list.length; i++){
+    var s = list[i];
+    if(s.x0 > e.x) break;
+    if(e.x < s.x0 || e.x > s.x1) continue;
+    var f = (e.x-s.x0)/(s.x1-s.x0); if(s.rise<0) f = 1-f;
+    var grade = (s.y1-s.y0)/(s.x1-s.x0)*s.rise;
+    if(e.grav > 0){
+      var sy = s.y0 + f*(s.y1-s.y0);
+      if(e.y-hh < sy+2 && e.y-hh > s.y0-18){
+        e.y = sy+hh; on = true;
+        var climb = e.vx*grade; if(climb > e.vy) e.vy = climb;
+      }
+    } else {
+      var syi = s.y1 - f*(s.y1-s.y0);
+      if(e.y+hh > syi-2 && e.y+hh < s.y1+18){
+        e.y = syi-hh; on = true;
+        var climb2 = -e.vx*grade; if(climb2 < e.vy) e.vy = climb2;
+      }
+    }
+  }
+  return on;
+}
+
+/* Move with collision. X and Y are swept separately: a pure-X sweep ignores
+   solids the player is exactly level with, so running across a flat row of
+   blocks never registers as a wall, while genuinely clipping a corner still
+   does. Any horizontal contact is fatal; vertical contact lands or bumps. */
+function moveAndCollide(sim, e, dt){
+  var b = entBox(e), pw = b.w, ph = b.h;
+  var dx = e.vx*dt, dy = e.vy*dt;
+
+  var hit = sweepWorld(sim, e.x, e.y, pw, ph, dx, 0);
+  if(hit){
+    e.x += dx*hit.t - (dx>0?0.01:-0.01);
+    return { fatal:true, landed:false };
+  }
+  e.x += dx;
+
+  var landed = false;
+  hit = sweepWorld(sim, e.x, e.y, pw, ph, 0, dy);
+  if(hit){
+    var s = hit.solid;
+    if(hit.ny > 0){ e.y = s.y1 + ph/2; } else { e.y = s.y0 - ph/2; }
+    landed = (hit.ny*e.grav > 0);
+    e.vy = 0;
+  } else {
+    e.y += dy;
+  }
+
+  if(resolveSlopes(sim, e, ph)) landed = true;
+  depenetrate(sim, e, pw, ph);
+  return { fatal:false, landed:landed };
+}

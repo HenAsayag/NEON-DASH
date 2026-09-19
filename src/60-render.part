@@ -1,0 +1,344 @@
+
+/* ==========================================================================
+   Renderer. Layers, in order: background parallax, ground and roof, world
+   objects, the player, particles, HUD. Everything is drawn in screen space
+   through toX/toY rather than a canvas transform, so text and images stay
+   the right way up while the world keeps y pointing sensibly upward.
+
+   shadowBlur is expensive, so it is spent only on orbs, portals, coins and
+   the player - never on the hundreds of blocks in a corridor.
+   ========================================================================== */
+
+var View = { scale:1, camX:0, camY:0, w:0, h:0, viewW:0, viewH:0, smoothY:null, shakeX:0, shakeY:0 };
+
+function toX(v, wx){ return (wx - v.camX)*v.scale + v.shakeX; }
+function toY(v, wy){ return v.h - (wy - v.camY)*v.scale + v.shakeY; }
+
+function computeView(cv, sim, dt){
+  var W = cv.width, H = cv.height;
+  var scale = Math.max(H/(15.5*PHYS.UNIT), W/(30*PHYS.UNIT));
+  var viewW = W/scale, viewH = H/scale;
+  var e = sim ? sim.ents[0] : null;
+
+  var bot = -2*PHYS.UNIT, top = (PHYS.CEIL_BLOCKS+2)*PHYS.UNIT;
+  var wantY;
+  if(viewH >= top-bot) wantY = bot - (viewH-(top-bot))/2;
+  else wantY = clamp((e?e.y:0) - viewH*0.45, bot, top-viewH);
+
+  if(View.smoothY === null || dt === 0) View.smoothY = wantY;
+  else View.smoothY += (wantY - View.smoothY)*Math.min(1, dt*6);
+
+  View.scale = scale; View.w = W; View.h = H;
+  View.viewW = viewW; View.viewH = viewH;
+  View.camX = (e ? e.x : 0) - viewW*0.28;
+  View.camY = View.smoothY;
+  return View;
+}
+
+/* ---- text helpers -------------------------------------------------------- */
+function txt(g, str, x, y, size, col, align, glow, weight){
+  g.font = (weight||"bold")+" "+size+"px 'Trebuchet MS','Segoe UI',system-ui,sans-serif";
+  g.textAlign = align||"left";
+  g.textBaseline = "middle";
+  if(glow){ g.shadowColor = glow; g.shadowBlur = size*0.55; }
+  g.fillStyle = col;
+  g.fillText(str, x, y);
+  g.shadowBlur = 0;
+}
+function measure(g, str, size, weight){
+  g.font = (weight||"bold")+" "+size+"px 'Trebuchet MS','Segoe UI',system-ui,sans-serif";
+  return g.measureText(str).width;
+}
+
+/* ---- background ---------------------------------------------------------- */
+var BG_HUE = 0;
+function drawBackground(g, v, level, t, bass){
+  var W = v.w, H = v.h, meta = level ? level.meta : null;
+  var hue = meta ? (meta.hue||0) : 0;
+  BG_HUE += (hue - BG_HUE)*0.04;
+
+  g.save();
+  g.fillStyle = meta ? meta.bgColor : COLORS.void;
+  g.fillRect(0,0,W,H);
+
+  var hi = Save.data.settings.highContrast;
+  g.globalAlpha = hi ? 0.25 : 0.85;
+
+  // far layer: the sunset backdrop, or a gradient plus a sun if it is missing
+  var sunset = Assets.get("bg-sunset", W);
+  var px = -(v.camX*0.12) % (W*1.6);
+  if(sunset){
+    for(var i=-1;i<=1;i++) g.drawImage(sunset, px + i*W*1.6, 0, W*1.6, H);
+  } else {
+    var grd = g.createLinearGradient(0,0,0,H);
+    grd.addColorStop(0, "#1a0b3d"); grd.addColorStop(0.62, "#55146b"); grd.addColorStop(1, "#b3255f");
+    g.fillStyle = grd; g.fillRect(0,0,W,H*0.92);
+    g.globalAlpha *= 0.55;
+    g.beginPath(); g.arc(W*0.5 + (px%W)*0.2, H*0.62, H*0.30, 0, 6.2832);
+    g.fillStyle = COLORS.gold; g.fill();
+  }
+
+  // near layer: the grid, pulsing gently with the bass
+  g.globalAlpha = (hi ? 0.10 : 0.30) + bass*(Save.data.settings.reducedMotion ? 0.05 : 0.22);
+  var grid = Assets.get("bg-grid", 300*v.scale);
+  var tile = 300*v.scale;
+  var ox = -((v.camX*0.45*v.scale) % tile);
+  var oy =  ((v.camY*0.45*v.scale) % tile);
+  if(grid){
+    for(var gx=ox-tile; gx<W+tile; gx+=tile)
+      for(var gy=oy-tile; gy<H+tile; gy+=tile) g.drawImage(grid, gx, gy, tile, tile);
+  } else {
+    g.strokeStyle = COLORS.violet; g.lineWidth = 1;
+    g.beginPath();
+    for(var lx=ox-tile; lx<W+tile; lx+=tile/5){ g.moveTo(lx,0); g.lineTo(lx,H); }
+    for(var ly=oy-tile; ly<H+tile; ly+=tile/5){ g.moveTo(0,ly); g.lineTo(W,ly); }
+    g.stroke();
+  }
+
+  if(hue){ g.globalAlpha = 0.16; g.fillStyle = "hsl("+(hue|0)+",70%,45%)"; g.fillRect(0,0,W,H); }
+  g.globalAlpha = 1;
+  g.restore();
+}
+
+/* ---- ground and roof ------------------------------------------------------ */
+function drawGround(g, v, level, t, bass){
+  var W = v.w, H = v.h, U = PHYS.UNIT;
+  var gy = toY(v, 0), cy = toY(v, PHYS.CEIL_BLOCKS*U);
+  var col = level ? level.meta.groundColor : COLORS.deep;
+
+  function slab(y0, y1, edgeY){
+    y0 = Math.max(y0, -U*v.scale); y1 = Math.min(y1, H + U*v.scale);
+    if(y1 <= y0) return;
+    g.fillStyle = col;
+    g.fillRect(0, y0, W, y1-y0);
+
+    var s = U*v.scale, ox = -((v.camX*v.scale) % s);
+    var tile = Assets.get("ground-tile", s);
+    g.globalAlpha = 0.35;
+    if(tile){
+      for(var x=ox-s; x<W+s; x+=s)
+        for(var y=y0; y<y1; y+=s) g.drawImage(tile, x, y, s, s);
+    } else {
+      g.strokeStyle = "rgba(45,226,230,.18)"; g.lineWidth = 1;
+      g.beginPath();
+      for(var x2=ox-s; x2<W+s; x2+=s){ g.moveTo(x2, y0); g.lineTo(x2, y1); }
+      for(var y2=y0; y2<y1; y2+=s){ g.moveTo(0, y2); g.lineTo(W, y2); }
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+
+    g.save();                                   // glowing lip along the surface
+    g.shadowColor = COLORS.cyan; g.shadowBlur = 16 + bass*22;
+    g.fillStyle = COLORS.cyan;
+    g.fillRect(0, edgeY-2, W, 4);
+    g.restore();
+  }
+
+  slab(gy, H + U*v.scale, gy);                  // floor
+  slab(-U*v.scale, cy, cy);                     // roof
+}
+
+/* ---- world objects --------------------------------------------------------- */
+function drawSprite(g, v, key, wx, wy, ww, wh, rot, glow, alpha){
+  var sw = ww*v.scale, sh = wh*v.scale;
+  var sx = toX(v, wx), sy = toY(v, wy+wh);
+  if(sx > v.w+60 || sx+sw < -60) return;
+  g.save();
+  if(alpha !== undefined) g.globalAlpha = alpha;
+  if(rot){
+    g.translate(sx+sw/2, sy+sh/2);
+    g.rotate(rot*Math.PI/180);
+    g.translate(-sw/2, -sh/2);
+  } else {
+    g.translate(sx, sy);
+  }
+  if(glow){ g.shadowColor = glow; g.shadowBlur = Math.min(26, sw*0.55); }
+  var ras = Assets.get(key, sw) || ProcCache.get(key, sw, sh);
+  g.drawImage(ras, 0, 0, sw, sh);
+  g.restore();
+}
+
+var GameTime = 0;
+
+function drawWorld(g, v, level, sim, t){
+  var list = level.draw;
+  var left = v.camX - PHYS.UNIT*3, right = v.camX + v.viewW + PHYS.UNIT*3;
+  for(var i=lowerBound(list, left); i<list.length; i++){
+    var o = list[i];
+    if(o.x > right) break;
+    var def = o.def, key = def.sprite;
+
+    if(def.kind === "finish"){
+      var fx = toX(v, o.x), h = v.h;
+      g.save();
+      g.shadowColor = COLORS.lime; g.shadowBlur = 30;
+      var grd = g.createLinearGradient(fx-6,0,fx+6,0);
+      grd.addColorStop(0,"rgba(124,255,107,0)");
+      grd.addColorStop(0.5,"rgba(124,255,107,.95)");
+      grd.addColorStop(1,"rgba(124,255,107,0)");
+      g.fillStyle = grd; g.fillRect(fx-10, 0, 20, h);
+      g.restore();
+      continue;
+    }
+    if(!key) continue;
+
+    if(sim && sim.used[o.idx] && (def.kind === "coin")) continue;   // collected
+
+    var rot = o.rot;
+    var glow = null;
+    if(def.kind === "orb" || def.kind === "portal"){
+      glow = PORTAL_TINT[o.t] || (def.kind === "orb" ? ORB_TINT[o.t] : COLORS.violet);
+      if(sim && sim.used[o.idx] && def.kind === "orb") glow = "#555";
+    } else if(def.kind === "coin"){
+      glow = COLORS.gold;
+    }
+    if(def.spin) rot = (t*def.spin) % 360;
+
+    var alpha = (sim && sim.used[o.idx] && def.kind === "orb") ? 0.35
+              : (glow ? 0.86 + 0.14*Math.sin(t*4 + o.idx) : undefined);
+    drawSprite(g, v, key, o.x, o.y, o.w, o.h, rot, glow, alpha);
+  }
+}
+
+var ORB_TINT = {
+  "orb-yellow":"#F9C80E","orb-pink":"#ff7ad9","orb-blue":"#2DE2E6",
+  "orb-green":"#7CFF6B","orb-red":"#FF3864","orb-dash":"#9D4EDD"
+};
+
+var MODE_TINT = {
+  cube:"#2DE2E6", ship:"#FF3864", ball:"#F9C80E",
+  ufo:"#7CFF6B", wave:"#9D4EDD", robot:"#ff9d4e"
+};
+
+/* ---- player ------------------------------------------------------------------ */
+function drawPlayer(g, v, e, t){
+  var m = MODES[e.mode], s = e.mini ? PHYS.MINI.scale : 1;
+  var ww = m.w*PHYS.UNIT*s, wh = m.h*PHYS.UNIT*s;
+  var sw = ww*v.scale, sh = wh*v.scale;
+  var sx = toX(v, e.x-ww/2), sy = toY(v, e.y+wh/2);
+  var tint = MODE_TINT[e.mode] || COLORS.cyan;
+
+  g.save();
+  g.translate(sx+sw/2, sy+sh/2);
+  g.rotate(e.rot*Math.PI/180);
+  if(e.grav < 0) g.scale(1, -1);
+  g.shadowColor = tint; g.shadowBlur = 18;
+  var key = (e.mode === "cube" && e.mini) ? "p-cube-mini" : "p-"+m.sprite;
+  var ras = Assets.get(key, sw) || ProcCache.getPlayer(e.mode, sw, sh, tint, COLORS.gold);
+  g.drawImage(ras, -sw/2, -sh/2, sw, sh);
+  g.restore();
+}
+
+/* ---- debug overlay ------------------------------------------------------------ */
+/* Every box is stroked twice: a dark backing line, then the colour. Without it
+   the overlay is invisible, because a hazard box drawn in the danger colour
+   lands exactly on top of a magenta spike and a solid box on a cyan block.
+   Hazards are drawn in lime for the same reason - it is the one palette colour
+   no obstacle uses, which makes the shrunken spike boxes obvious at a glance. */
+function drawHitboxes(g, v, level, sim){
+  var left = v.camX - PHYS.UNIT*3, right = v.camX + v.viewW + PHYS.UNIT*3, i, b;
+
+  function stroke2(draw){
+    g.lineWidth = 3.5; g.strokeStyle = "rgba(6,3,16,.85)"; draw();
+    g.lineWidth = 1.5; g.strokeStyle = stroke2.col;        draw();
+  }
+  function box(list, col){
+    stroke2.col = col;
+    for(i=lowerBound(list, left); i<list.length; i++){
+      b = list[i];
+      if(b.x0 > right) break;
+      (function(bb){
+        if(bb.r !== undefined){
+          stroke2(function(){
+            g.beginPath(); g.arc(toX(v,bb.cx), toY(v,bb.cy), bb.r*v.scale, 0, 6.2832); g.stroke();
+          });
+        } else {
+          stroke2(function(){
+            g.strokeRect(toX(v,bb.x0), toY(v,bb.y1), (bb.x1-bb.x0)*v.scale, (bb.y1-bb.y0)*v.scale);
+          });
+        }
+      })(b);
+    }
+  }
+  box(level.solids,   "#2DE2E6");
+  box(level.hazards,  "#7CFF6B");
+  box(level.triggers, "#F9C80E");
+
+  for(var k=0;k<sim.ents.length;k++){
+    var e = sim.ents[k], bb2 = entBox(e);
+    stroke2.col = "#FFFFFF";
+    (function(bx){
+      stroke2(function(){
+        g.strokeRect(toX(v,bx.x), toY(v,bx.y), bx.w*v.scale, bx.h*v.scale);
+      });
+    })({ x:e.x-bb2.w/2, y:e.y+bb2.h/2, w:bb2.w, h:bb2.h });
+  }
+
+  var s = Math.max(10, Math.min(v.w,v.h)*0.02);
+  txt(g, "player", 10, v.h-s*4.6, s, "#FFFFFF", "left", "#000");
+  txt(g, "solid",  10, v.h-s*3.4, s, "#2DE2E6", "left", "#000");
+  txt(g, "lethal", 10, v.h-s*2.2, s, "#7CFF6B", "left", "#000");
+  txt(g, "trigger",10, v.h-s*1.0, s, "#F9C80E", "left", "#000");
+}
+
+/* ---- HUD ------------------------------------------------------------------------ */
+function drawHUD(g, v, G){
+  var W = v.w, H = v.h, S = Math.max(11, Math.min(W,H)*0.024);
+  var barW = Math.min(W*0.52, 520), barH = Math.max(10, S*0.95);
+  var bx = (W-barW)/2, by = S*1.0;
+  var rec = Save.level(G.level.meta.id);
+
+  // progress bar
+  g.save();
+  roundRect(g, bx, by, barW, barH, barH/2);
+  g.fillStyle = "rgba(10,5,24,.72)"; g.fill();
+  g.strokeStyle = "rgba(246,242,255,.35)"; g.lineWidth = 1.5; g.stroke();
+  g.save(); g.clip();
+  var pw = barW*G.sim.progress;
+  var grd = g.createLinearGradient(bx,0,bx+barW,0);
+  grd.addColorStop(0, COLORS.cyan); grd.addColorStop(1, COLORS.lime);
+  g.fillStyle = grd; g.fillRect(bx, by, pw, barH);
+  g.restore();
+  // personal best marker
+  var best = G.practice ? rec.practiceBest : rec.best;
+  if(best > 0.01){
+    var mx = bx + barW*best;
+    g.fillStyle = COLORS.gold;
+    g.fillRect(mx-1.5, by-3, 3, barH+6);
+  }
+  g.restore();
+
+  txt(g, Math.floor(G.sim.progress*100)+"%", bx+barW+S*0.7, by+barH/2, S, COLORS.ink, "left", COLORS.cyan);
+  txt(g, G.level.meta.name, bx-S*0.7, by+barH/2, S, "rgba(246,242,255,.75)", "right");
+
+  // attempts + mode badge
+  var line2 = by+barH+S*1.3;
+  txt(g, "Attempt "+G.attempts, W/2, line2, S*0.9, "rgba(246,242,255,.8)", "center");
+  if(G.practice) txt(g, "PRACTICE", W/2, line2+S*1.3, S*0.85, COLORS.lime, "center", COLORS.lime);
+
+  // coins
+  var cs = S*0.8;
+  for(var i=0;i<3;i++){
+    var cx = W - S*1.2 - i*(cs*2.1), cy = S*1.5;
+    g.beginPath(); g.arc(cx, cy, cs, 0, 6.2832);
+    var got = G.sim.coins[2-i] || rec.coins[2-i];
+    g.fillStyle = got ? COLORS.gold : "rgba(246,242,255,.14)";
+    if(G.sim.coins[2-i]){ g.shadowColor = COLORS.gold; g.shadowBlur = 12; }
+    g.fill(); g.shadowBlur = 0;
+    g.strokeStyle = "rgba(246,242,255,.35)"; g.lineWidth = 1.2; g.stroke();
+  }
+
+  // the attempt banner fades out over the first second
+  if(G.bannerT > 0){
+    var a = Math.min(1, G.bannerT/0.4);
+    g.globalAlpha = a;
+    txt(g, "ATTEMPT "+G.attempts, W*0.28, H*0.40, S*2.6, COLORS.ink, "center", COLORS.cyan);
+    g.globalAlpha = 1;
+  }
+
+  if(G.hintT > 0){
+    g.globalAlpha = Math.min(1, G.hintT);
+    txt(g, G.hint, W/2, H-S*2.2, S*0.95, COLORS.ink, "center", COLORS.violet);
+    g.globalAlpha = 1;
+  }
+}

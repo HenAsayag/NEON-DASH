@@ -1,0 +1,311 @@
+
+/* ==========================================================================
+   Assets. Sprites are optional: every one of them has a procedural stand-in
+   drawn from the palette, so deleting assets/ entirely leaves the game fully
+   playable. SVGs are rasterised once into an offscreen canvas because
+   drawImage() on an SVG re-rasterises on every call and wrecks the frame time.
+   ========================================================================== */
+
+var SPRITE_PATHS = (function(){
+  var p = {}, i;
+  var obstacles = ["spike","spike-mini","spike-triple","block","block-half","slope","saw","ground-tile"];
+  var inter     = ["pad-yellow","pad-pink","pad-blue","pad-red",
+                   "orb-yellow","orb-pink","orb-blue","orb-green","orb-red","orb-dash","coin"];
+  var portals   = ["portal-cube","portal-ship","portal-ball","portal-ufo","portal-wave","portal-robot",
+                   "portal-gravity-up","portal-gravity-down","portal-mini","portal-big",
+                   "portal-dual","portal-mirror","speed-slow","speed-normal","speed-fast","speed-faster"];
+  var players   = ["cube","cube-mini","ship","ball","ufo","wave","robot"];
+  var fx        = ["explosion","particle-spark","particle-square","trail"];
+  var ui        = ["logo","icon-play","icon-pause","icon-restart","icon-practice","progress-bar"];
+  for(i=0;i<obstacles.length;i++) p[obstacles[i]] = "assets/sprites/obstacles/"+obstacles[i]+".svg";
+  for(i=0;i<inter.length;i++)     p[inter[i]]     = "assets/sprites/interactive/"+inter[i]+".svg";
+  for(i=0;i<portals.length;i++)   p[portals[i]]   = "assets/sprites/portals/"+portals[i]+".svg";
+  for(i=0;i<players.length;i++)   p["p-"+players[i]] = "assets/sprites/player/"+players[i]+".svg";
+  for(i=0;i<fx.length;i++)        p["fx-"+fx[i]]  = "assets/sprites/fx/"+fx[i]+".svg";
+  for(i=0;i<ui.length;i++)        p["ui-"+ui[i]]  = "assets/ui/"+ui[i]+".svg";
+  p["bg-grid"]   = "assets/backgrounds/bg-grid.svg";
+  p["bg-sunset"] = "assets/backgrounds/bg-sunset.svg";
+  return p;
+})();
+
+var Assets = {
+  slots: {},
+  pending: 0,
+  ready: false,
+
+  init: function(){
+    var self = this;
+    for(var key in SPRITE_PATHS){
+      (function(k, src){
+        var slot = { ok:false, img:null, ras:null, rasScale:0, w:0, h:0 };
+        self.slots[k] = slot;
+        var im = new Image();
+        self.pending++;
+        im.onload = function(){
+          slot.ok = im.naturalWidth > 0;
+          slot.img = im; slot.w = im.naturalWidth || 30; slot.h = im.naturalHeight || 30;
+          if(--self.pending === 0) self.ready = true;
+        };
+        im.onerror = function(){ slot.ok = false; if(--self.pending === 0) self.ready = true; };
+        im.src = src;
+      })(key, SPRITE_PATHS[key]);
+    }
+    if(this.pending === 0) this.ready = true;
+  },
+
+  /* Returns a canvas rasterised near the size it will be drawn at, or null when
+     the sprite is missing and the caller should fall back to drawing shapes. */
+  get: function(key, targetW){
+    var s = this.slots[key];
+    if(!s || !s.ok || !s.img) return null;
+    var want = clamp((targetW || s.w) / s.w, 0.5, 3);
+    if(!s.ras || Math.abs(want - s.rasScale) / s.rasScale > 0.3){
+      var c = document.createElement("canvas");
+      c.width  = Math.max(2, Math.ceil(s.w * want));
+      c.height = Math.max(2, Math.ceil(s.h * want));
+      var g = c.getContext("2d");
+      try { g.drawImage(s.img, 0, 0, c.width, c.height); }
+      catch(err){ s.ok = false; return null; }
+      s.ras = c; s.rasScale = want;
+    }
+    return s.ras;
+  }
+};
+
+/* Procedural sprites are rasterised once per size bucket, exactly like the
+   SVGs. Drawing them live costs a fresh gradient per object per frame, which
+   is the difference between 34 and 60 fps when assets/ is missing. Anything
+   that used to animate inside the shape is now done by the caller instead. */
+var ProcCache = {
+  map: {},
+  get: function(key, w, h){
+    var bucket = Math.max(8, Math.round(w/4)*4);
+    var id = key + "@" + bucket;
+    var c = this.map[id];
+    if(!c){
+      var k = bucket/Math.max(1,w);
+      c = document.createElement("canvas");
+      c.width  = Math.max(2, Math.ceil(bucket));
+      c.height = Math.max(2, Math.ceil(h*k));
+      procSprite(c.getContext("2d"), key, c.width, c.height);
+      this.map[id] = c;
+    }
+    return c;
+  },
+  player: {},
+  getPlayer: function(mode, w, h, colA, colB){
+    var bucket = Math.max(8, Math.round(w/4)*4);
+    var id = mode + "@" + bucket;
+    var c = this.player[id];
+    if(!c){
+      var k = bucket/Math.max(1,w);
+      c = document.createElement("canvas");
+      c.width  = Math.max(2, Math.ceil(bucket));
+      c.height = Math.max(2, Math.ceil(h*k));
+      procPlayer(c.getContext("2d"), mode, c.width, c.height, colA, colB);
+      this.player[id] = c;
+    }
+    return c;
+  }
+};
+
+/* --------------------------------------------------------------------------
+   Procedural stand-ins. Each one draws into the box (0,0)-(w,h) that the
+   caller has already positioned and rotated, with screen-style y pointing
+   down. They are deliberately the same silhouettes as the SVGs, so a missing
+   asset changes the finish but never the readability of an obstacle.
+   -------------------------------------------------------------------------- */
+function procSprite(g, key, w, h){
+  var C = COLORS;
+  switch(key){
+
+    case "spike": case "spike-mini": case "spike-triple": {
+      var n = (key === "spike-triple") ? 3 : 1, cw = w/n;
+      for(var i=0;i<n;i++){
+        var x0 = i*cw;
+        g.beginPath();
+        g.moveTo(x0+cw*0.06, h); g.lineTo(x0+cw*0.5, 0); g.lineTo(x0+cw*0.94, h);
+        g.closePath();
+        var grd = g.createLinearGradient(0, 0, 0, h);
+        grd.addColorStop(0, "#ff8fa8"); grd.addColorStop(1, C.magenta);
+        g.fillStyle = grd; g.fill();
+        g.strokeStyle = "rgba(255,255,255,.65)"; g.lineWidth = Math.max(1, w*0.035); g.stroke();
+      }
+      break;
+    }
+
+    case "block": case "block-half": {
+      var r = Math.min(w,h)*0.14;
+      roundRect(g, 1, 1, w-2, h-2, r);
+      var bg = g.createLinearGradient(0,0,0,h);
+      bg.addColorStop(0, "#38207a"); bg.addColorStop(1, C.deep);
+      g.fillStyle = bg; g.fill();
+      g.strokeStyle = C.cyan; g.lineWidth = Math.max(1.2, w*0.055); g.stroke();
+      g.globalAlpha = 0.5;
+      roundRect(g, w*0.26, h*0.26, w*0.48, h*0.48, r*0.7);
+      g.strokeStyle = "rgba(45,226,230,.75)"; g.lineWidth = Math.max(1, w*0.03); g.stroke();
+      g.globalAlpha = 1;
+      break;
+    }
+
+    case "slope": {
+      g.beginPath(); g.moveTo(0,h); g.lineTo(w,0); g.lineTo(w,h); g.closePath();
+      var sg = g.createLinearGradient(0,h,w,0);
+      sg.addColorStop(0, C.deep); sg.addColorStop(1, "#38207a");
+      g.fillStyle = sg; g.fill();
+      g.strokeStyle = C.cyan; g.lineWidth = Math.max(1.2, w*0.05); g.stroke();
+      break;
+    }
+
+    case "ground-tile": {
+      g.fillStyle = C.deep; g.fillRect(0,0,w,h);
+      g.strokeStyle = "rgba(45,226,230,.25)"; g.lineWidth = 1;
+      g.strokeRect(0.5,0.5,w-1,h-1);
+      break;
+    }
+
+    case "saw": {
+      var cx=w/2, cy=h/2, R=Math.min(w,h)*0.46, teeth=10;
+      g.beginPath();
+      for(var s=0;s<teeth*2;s++){
+        var ang = (s/(teeth*2))*Math.PI*2;
+        var rr = (s%2===0) ? R : R*0.74;
+        g[s?"lineTo":"moveTo"](cx+Math.cos(ang)*rr, cy+Math.sin(ang)*rr);
+      }
+      g.closePath();
+      g.fillStyle = "#b9c6e8"; g.fill();
+      g.strokeStyle = C.magenta; g.lineWidth = Math.max(1.2, w*0.04); g.stroke();
+      g.beginPath(); g.arc(cx,cy,R*0.33,0,6.2832);
+      g.fillStyle = C.void; g.fill();
+      g.strokeStyle = C.magenta; g.stroke();
+      break;
+    }
+
+    case "pad-yellow": case "pad-pink": case "pad-blue": case "pad-red": {
+      var pc = key==="pad-yellow"?C.gold : key==="pad-pink"?"#ff7ad9" : key==="pad-blue"?C.cyan : C.magenta;
+      roundRect(g, w*0.04, h*0.18, w*0.92, h*0.74, h*0.35);
+      g.fillStyle = pc; g.fill();
+      g.globalAlpha = 0.45;
+      roundRect(g, w*0.16, h*0.02, w*0.68, h*0.5, h*0.3);
+      g.fillStyle = "#fff"; g.fill();
+      g.globalAlpha = 1;
+      break;
+    }
+
+    case "orb-yellow": case "orb-pink": case "orb-blue":
+    case "orb-green": case "orb-red": case "orb-dash": {
+      var oc = key==="orb-yellow"?C.gold : key==="orb-pink"?"#ff7ad9" :
+               key==="orb-blue"?C.cyan : key==="orb-green"?C.lime :
+               key==="orb-red"?C.magenta : C.violet;
+      var ocx=w/2, ocy=h/2, orr=w*0.34;
+      g.beginPath(); g.arc(ocx,ocy,orr*1.42,0,6.2832);
+      g.fillStyle = oc; g.globalAlpha = 0.18; g.fill(); g.globalAlpha = 1;
+      g.beginPath(); g.arc(ocx,ocy,orr,0,6.2832);
+      g.strokeStyle = oc; g.lineWidth = Math.max(1.5, w*0.09); g.stroke();
+      g.beginPath(); g.arc(ocx,ocy,orr*0.42,0,6.2832);
+      g.fillStyle = "#fff"; g.globalAlpha = 0.9; g.fill(); g.globalAlpha = 1;
+      break;
+    }
+
+    case "coin": {
+      var ccx=w/2, ccy=h/2, cr=w*0.36;
+      g.beginPath(); g.arc(ccx,ccy,cr,0,6.2832);
+      var cg = g.createRadialGradient(ccx-cr*0.3, ccy-cr*0.3, cr*0.1, ccx, ccy, cr);
+      cg.addColorStop(0,"#fff6c0"); cg.addColorStop(1,C.gold);
+      g.fillStyle = cg; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1, w*0.045); g.stroke();
+      g.beginPath(); g.arc(ccx,ccy,cr*0.55,0,6.2832);
+      g.strokeStyle = "rgba(255,255,255,.7)"; g.stroke();
+      break;
+    }
+
+    default: {
+      if(key.indexOf("portal-") === 0){
+        var col = PORTAL_TINT[key] || C.violet;
+        g.save();
+        roundRect(g, w*0.12, h*0.02, w*0.76, h*0.96, w*0.38);
+        g.strokeStyle = col; g.lineWidth = Math.max(2, w*0.13); g.stroke();
+        g.globalAlpha = 0.20;
+        g.fillStyle = col; g.fill();
+        g.restore();
+      } else if(key.indexOf("speed-") === 0){
+        var arrows = {"speed-slow":1,"speed-normal":2,"speed-fast":3,"speed-faster":4,"speed-fastest":5}[key]||2;
+        g.strokeStyle = C.lime; g.lineWidth = Math.max(1.4, w*0.07); g.lineCap="round";
+        for(var a=0;a<arrows;a++){
+          var ax = w*0.18 + a*(w*0.64/Math.max(1,arrows-1||1));
+          g.beginPath(); g.moveTo(ax-w*0.1, h*0.3); g.lineTo(ax+w*0.06, h*0.5); g.lineTo(ax-w*0.1, h*0.7);
+          g.stroke();
+        }
+      }
+    }
+  }
+}
+
+var PORTAL_TINT = {
+  "portal-cube":"#2DE2E6", "portal-ship":"#FF3864", "portal-ball":"#F9C80E",
+  "portal-ufo":"#7CFF6B",  "portal-wave":"#9D4EDD", "portal-robot":"#ff9d4e",
+  "portal-gravity-up":"#7CFF6B", "portal-gravity-down":"#2DE2E6",
+  "portal-mini":"#F9C80E", "portal-big":"#F9C80E",
+  "portal-dual":"#FF3864", "portal-mirror":"#9D4EDD"
+};
+
+/* Player silhouettes, drawn centred in a (0,0)-(w,h) box. */
+function procPlayer(g, mode, w, h, colA, colB){
+  var r = Math.min(w,h);
+  switch(mode){
+    case "cube": case "robot":
+      roundRect(g, 0, 0, w, h, r*0.18);
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.5, r*0.07); g.stroke();
+      roundRect(g, w*0.24, h*0.24, w*0.52, h*0.52, r*0.12);
+      g.fillStyle = colB; g.fill();
+      if(mode === "robot"){
+        g.fillStyle = colB;
+        g.fillRect(w*0.12, h*0.86, w*0.2, h*0.14);
+        g.fillRect(w*0.68, h*0.86, w*0.2, h*0.14);
+      }
+      break;
+    case "ball":
+      g.beginPath(); g.arc(w/2, h/2, r*0.48, 0, 6.2832);
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.5, r*0.07); g.stroke();
+      g.beginPath(); g.moveTo(w*0.5, h*0.08); g.lineTo(w*0.5, h*0.92);
+      g.strokeStyle = colB; g.lineWidth = Math.max(1.5, r*0.12); g.stroke();
+      break;
+    case "ship":
+      g.beginPath();
+      g.moveTo(0, h*0.72); g.lineTo(w*0.62, h*0.2); g.lineTo(w, h*0.44);
+      g.lineTo(w*0.72, h*0.92); g.lineTo(w*0.1, h*0.95);
+      g.closePath();
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.4, r*0.06); g.stroke();
+      roundRect(g, w*0.3, h*0.34, w*0.34, h*0.34, r*0.14);
+      g.fillStyle = colB; g.fill();
+      break;
+    case "ufo":
+      g.beginPath(); g.ellipse(w/2, h*0.62, w*0.48, h*0.26, 0, 0, 6.2832);
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.4, r*0.07); g.stroke();
+      g.beginPath(); g.arc(w/2, h*0.5, w*0.24, Math.PI, 0);
+      g.fillStyle = colB; g.fill(); g.stroke();
+      break;
+    case "wave":
+      g.beginPath();
+      g.moveTo(w*0.5, 0); g.lineTo(w, h*0.5); g.lineTo(w*0.5, h); g.lineTo(0, h*0.5);
+      g.closePath();
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.4, r*0.08); g.stroke();
+      break;
+  }
+}
+
+function roundRect(g, x, y, w, h, r){
+  r = Math.min(r, w/2, h/2);
+  g.beginPath();
+  g.moveTo(x+r, y);
+  g.arcTo(x+w, y,   x+w, y+h, r);
+  g.arcTo(x+w, y+h, x,   y+h, r);
+  g.arcTo(x,   y+h, x,   y,   r);
+  g.arcTo(x,   y,   x+w, y,   r);
+  g.closePath();
+}

@@ -1,0 +1,3800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#140B2E">
+<title>NEON DASH</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{
+    width:100%;height:100%;overflow:hidden;background:#0A0518;
+    color:#F6F2FF;font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+    touch-action:none;overscroll-behavior:none;
+  }
+  #wrap{position:fixed;inset:0}
+  canvas#game{display:block;width:100%;height:100%;touch-action:none}
+  /* Portrait nag on phones. The game keeps running underneath. */
+  #rotate{
+    position:fixed;inset:0;display:none;place-items:center;text-align:center;
+    background:rgba(10,5,24,.94);z-index:40;padding:24px;font-size:18px;letter-spacing:.08em;
+  }
+  #rotate b{display:block;font-size:26px;color:#2DE2E6;margin-bottom:10px;letter-spacing:.2em}
+  @media (orientation:portrait) and (pointer:coarse){ #rotate{display:grid} }
+  /* The only DOM the game uses: a textarea for level import/export. */
+  #io{
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:min(760px,92vw);height:min(520px,70vh);display:none;z-index:50;
+    background:#12082a;color:#cfe;border:2px solid #2DE2E6;border-radius:10px;
+    padding:12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;resize:none;
+    box-shadow:0 0 60px rgba(45,226,230,.35)
+  }
+  #io.on{display:block}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<div id="rotate"><div><b>NEON DASH</b>Rotate your device to landscape</div></div>
+<textarea id="io" spellcheck="false"></textarea>
+<script>
+"use strict";
+/* ==========================================================================
+   NEON DASH - a one-button rhythm platformer.
+   Single file, Canvas 2D, no build step, no dependencies, runs from file://.
+
+   Layout of this file:
+     CORE      constants, object table, level data, level parsing,
+               collision and the deterministic physics step   (headless-safe)
+     Assets    sprite loading + procedural fallbacks
+     Input     keyboard / mouse / touch with a tap buffer
+     Audio     WebAudio: synthesised music, SFX, analyser
+     Particles trail, explosion, sparks
+     Renderer  background -> world -> player -> particles -> HUD
+     Save      localStorage with a memory fallback
+     Scenes    menu / select / play / pause / end / settings / editor
+     Game      fixed-step accumulator loop, decoupled render
+   ========================================================================== */
+
+/*==CORE_START==*/
+/* --------------------------------------------------------------------------
+   CORE - everything up to CORE_END is pure logic: no DOM, no canvas, no audio.
+   tools/verify.js evaluates exactly this block in Node to prove every level
+   is beatable with the real physics.
+   -------------------------------------------------------------------------- */
+
+var COLORS = {
+  void:"#140B2E", deep:"#241148", cyan:"#2DE2E6", magenta:"#FF3864",
+  gold:"#F9C80E", violet:"#9D4EDD", lime:"#7CFF6B", ink:"#F6F2FF", shadow:"#0A0518"
+};
+
+var PHYS = {
+  UNIT: 30,
+  TIMESTEP: 1/240,          // fixed simulation step; rendering is decoupled
+  SPEEDS: { slow:0.807, normal:1.0, fast:1.243, faster:1.502, fastest:1.849 },
+  BASE_VX: 311.6,           // 10.386 blocks/s at speed 1
+
+  // Cube: 2 blocks of jump height at every speed. 555^2/(2*2560) = 60.2px = 2.006 blocks.
+  CUBE:  { gravity:2560, jumpV:555, maxFall:600, rotDegPerSec:415 },
+  MINI:  { scale:0.6, gravityMul:1.25, jumpVMul:0.86 },
+  SHIP:  { gravity:1550, thrust:2350, maxUp:470, maxDown:470, tiltMaxDeg:28 },
+  BALL:  { gravity:2000, maxFall:470, flipCooldown:0.08 },
+  UFO:   { gravity:2000, impulse:430, maxFall:480 },
+  WAVE:  { slopeRatio:1.0, miniSlopeRatio:1.6 },
+  ROBOT: { gravity:2560, jumpV:555, maxChargeSec:0.30, maxJumpMul:1.35 },
+
+  CEIL_BLOCKS: 12,          // solid roof; reverse gravity lands you on it
+  TAP_BUFFER: 6/60,         // orb forgiveness: 6 frames either side of contact
+  COYOTE: 0.055,            // grace period for jumps just after leaving a ledge
+  DEATH_FLOOR: -6,          // fall past this (in blocks) and you die
+};
+
+/* Impulse needed to rise `blocks` blocks under `gravity`: v = sqrt(2*g*h).
+   Keeps pad and orb strengths readable in level-design terms. */
+function impulseFor(blocks, gravity){ return Math.sqrt(2 * gravity * blocks * PHYS.UNIT); }
+
+/* --------------------------------------------------------------------------
+   Object table. Sizes in blocks. A cell's origin is its bottom-left corner at
+   (x, y), where y counts up from the floor line, so y:0 rests on the floor.
+   `hit` is the lethal box for hazards: deliberately far smaller than the art.
+   -------------------------------------------------------------------------- */
+var OBJ = {
+  /* hazards ----------------------------------------------------------- */
+  "spike":        { w:1,   h:1,   kind:"hazard", hit:{w:0.40,h:0.50}, sprite:"spike" },
+  "spike-mini":   { w:1,   h:0.5, kind:"hazard", hit:{w:0.40,h:0.25}, sprite:"spike-mini" },
+  "spike-triple": { w:3,   h:1,   kind:"hazard", hit:{w:0.40,h:0.50}, repeat:3, sprite:"spike-triple" },
+  "saw":          { w:1.5, h:1.5, kind:"hazard", circle:0.55, spin:-320, sprite:"saw" },
+
+  /* solids ------------------------------------------------------------ */
+  "block":        { w:1, h:1,   kind:"solid", sprite:"block" },
+  "block-half":   { w:1, h:0.5, kind:"solid", sprite:"block-half" },
+  "slope":        { w:1, h:1,   kind:"slope", sprite:"slope" },
+
+  /* pads - fire automatically on contact -------------------------------- */
+  "pad-yellow":   { w:1, h:0.4, kind:"pad", jump:3.2, sprite:"pad-yellow" },
+  "pad-pink":     { w:1, h:0.4, kind:"pad", jump:1.6, sprite:"pad-pink" },
+  "pad-red":      { w:1, h:0.4, kind:"pad", jump:4.5, sprite:"pad-red" },
+  "pad-blue":     { w:1, h:0.4, kind:"pad", flip:true, jump:0.9, sprite:"pad-blue" },
+
+  /* orbs - fire only if the player taps while touching them -------------- */
+  "orb-yellow":   { w:1, h:1, kind:"orb", circle:0.75, jump:2.0,  sprite:"orb-yellow" },
+  "orb-pink":     { w:1, h:1, kind:"orb", circle:0.75, jump:1.5,  sprite:"orb-pink" },
+  "orb-red":      { w:1, h:1, kind:"orb", circle:0.75, jump:3.5,  sprite:"orb-red" },
+  "orb-blue":     { w:1, h:1, kind:"orb", circle:0.75, flip:true, jump:0.7, sprite:"orb-blue" },
+  "orb-green":    { w:1, h:1, kind:"orb", circle:0.75, flip:true, jump:2.0, sprite:"orb-green" },
+  "orb-dash":     { w:1, h:1, kind:"orb", circle:0.75, dash:true, sprite:"orb-dash" },
+
+  /* pickups ------------------------------------------------------------- */
+  "coin":         { w:1, h:1, kind:"coin", circle:0.5, sprite:"coin" },
+
+  /* portals ------------------------------------------------------------- */
+  "portal-cube":  { w:1, h:2, kind:"portal", mode:"cube",  sprite:"portal-cube" },
+  "portal-ship":  { w:1, h:2, kind:"portal", mode:"ship",  sprite:"portal-ship" },
+  "portal-ball":  { w:1, h:2, kind:"portal", mode:"ball",  sprite:"portal-ball" },
+  "portal-ufo":   { w:1, h:2, kind:"portal", mode:"ufo",   sprite:"portal-ufo" },
+  "portal-wave":  { w:1, h:2, kind:"portal", mode:"wave",  sprite:"portal-wave" },
+  "portal-robot": { w:1, h:2, kind:"portal", mode:"robot", sprite:"portal-robot" },
+  "portal-gravity-up":   { w:1, h:2, kind:"portal", grav:-1, sprite:"portal-gravity-up" },
+  "portal-gravity-down": { w:1, h:2, kind:"portal", grav: 1, sprite:"portal-gravity-down" },
+  "portal-mini":  { w:1, h:2, kind:"portal", mini:true,   sprite:"portal-mini" },
+  "portal-big":   { w:1, h:2, kind:"portal", mini:false,  sprite:"portal-big" },
+  "portal-dual":  { w:1, h:2, kind:"portal", dual:true,   sprite:"portal-dual" },
+  "portal-mirror":{ w:1, h:2, kind:"portal", mirror:true, sprite:"portal-mirror" },
+
+  /* speed changers ------------------------------------------------------- */
+  "speed-slow":   { w:1, h:1, kind:"portal", speed:0.807, sprite:"speed-slow" },
+  "speed-normal": { w:1, h:1, kind:"portal", speed:1.0,   sprite:"speed-normal" },
+  "speed-fast":   { w:1, h:1, kind:"portal", speed:1.243, sprite:"speed-fast" },
+  "speed-faster": { w:1, h:1, kind:"portal", speed:1.502, sprite:"speed-faster" },
+  "speed-fastest":{ w:1, h:1, kind:"portal", speed:1.849, sprite:"speed-fastest" },
+
+  /* end of level ---------------------------------------------------------- */
+  "finish":       { w:1, h:8, kind:"finish" },
+};
+
+/* Sprite footprint per gamemode, in blocks. The hitbox is 15% smaller. */
+var MODES = {
+  cube:  { w:1,    h:1,    sprite:"cube" },
+  ship:  { w:1.5,  h:1,    sprite:"ship" },
+  ball:  { w:1,    h:1,    sprite:"ball" },
+  ufo:   { w:1.13, h:0.86, sprite:"ufo" },
+  wave:  { w:0.8,  h:0.8,  sprite:"wave" },
+  robot: { w:1,    h:1.13, sprite:"robot" },
+};
+var HITBOX_SHRINK = 0.85;
+var MODE_LIST = ["cube","ship","ball","ufo","wave","robot"];
+
+/* --------------------------------------------------------------------------
+   Level parsing. Turns the authoring JSON (see assets/levels/level-schema.json)
+   into three x-sorted lists - solids, hazards, triggers - so each frame only
+   has to look at the handful of objects near the player.
+   -------------------------------------------------------------------------- */
+
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+
+function parseLevel(src){
+  var U = PHYS.UNIT;
+  var meta = {
+    id:"level", name:"Untitled", difficulty:"easy", bpm:120,
+    music:null, musicOffsetMs:0, startMode:"cube", startSpeed:1,
+    lengthBlocks:200, bgColor:COLORS.void, groundColor:COLORS.deep, hue:0
+  };
+  for(var k in (src.meta||{})) meta[k] = src.meta[k];
+
+  var objects=[], solids=[], slopes=[], hazards=[], triggers=[];
+  var raw = src.objects || [];
+
+  for(var i=0;i<raw.length;i++){
+    var o = raw[i], def = OBJ[o.t];
+    if(!def) continue;                                  // unknown ids are skipped, not fatal
+    var sc  = o.scale || 1;
+    var rot = ((o.rot|0) % 360 + 360) % 360;
+    var rec = {
+      idx: objects.length, t:o.t, def:def, rot:rot, scale:sc, flip:!!o.flip,
+      gx:o.x, gy:o.y,
+      x: o.x*U, y: o.y*U,                                // cell origin, bottom-left
+      x0: o.x*U,                                         // alias so lowerBound() works on this list
+      w: def.w*U*sc, h: def.h*U*sc
+    };
+    objects.push(rec);
+
+    var x0=rec.x, y0=rec.y, x1=rec.x+rec.w, y1=rec.y+rec.h;
+    var cx=(x0+x1)/2, cy=(y0+y1)/2;
+
+    switch(def.kind){
+      case "solid":
+        solids.push({x0:x0,y0:y0,x1:x1,y1:y1,o:rec});
+        break;
+
+      case "slope":
+        // Ramp rising to the right, or to the left when flipped.
+        slopes.push({x0:x0,y0:y0,x1:x1,y1:y1,rise:(rec.flip?-1:1),o:rec});
+        break;
+
+      case "hazard":
+        if(def.circle){
+          hazards.push({x0:cx-def.circle*U*sc, x1:cx+def.circle*U*sc,
+                        y0:cy-def.circle*U*sc, y1:cy+def.circle*U*sc,
+                        cx:cx, cy:cy, r:def.circle*U*sc, o:rec});
+        } else {
+          var n = def.repeat || 1;
+          for(var k2=0;k2<n;k2++) hazards.push(spikeBox(rec, k2, n));
+        }
+        break;
+
+      case "pad": case "orb": case "coin": case "portal": case "finish":
+        var tr = {x0:x0,y0:y0,x1:x1,y1:y1,kind:def.kind,o:rec};
+        if(def.circle){ tr.cx=cx; tr.cy=cy; tr.r=def.circle*U*sc;
+                        tr.x0=cx-tr.r; tr.x1=cx+tr.r; tr.y0=cy-tr.r; tr.y1=cy+tr.r; }
+        // Portals get 0.6 blocks of vertical slack so a level authored with the
+        // portal drawn beside the player's path still fires reliably.
+        if(def.kind==="portal"){ tr.y0 -= 0.6*U; tr.y1 += 0.6*U; }
+        if(def.kind==="finish"){ tr.x0=x0; tr.x1=x0+U*0.4; tr.y0=-U*4; tr.y1=y0+def.h*U; }
+        triggers.push(tr);
+        break;
+    }
+  }
+
+  var bySortX = function(a,b){ return a.x0-b.x0; };
+  solids.sort(bySortX); slopes.sort(bySortX); hazards.sort(bySortX); triggers.sort(bySortX);
+
+  // Coins get stable slots 0..2 so saves stay meaningful when a level is edited.
+  var coinSlot = 0;
+  for(var ti=0; ti<triggers.length; ti++)
+    if(triggers[ti].kind==="coin") triggers[ti].slot = coinSlot++;
+
+  var finishX = meta.lengthBlocks*U;
+  for(var t2=0;t2<triggers.length;t2++)
+    if(triggers[t2].kind==="finish") finishX = triggers[t2].x0;
+
+  // Draw order is x-sorted while `objects` keeps authoring order, because the
+  // `used` flags are indexed by position in `objects`.
+  var draw = objects.slice().sort(bySortX);
+
+  return {
+    meta:meta, objects:objects, draw:draw,
+    solids:solids, slopes:slopes, hazards:hazards, triggers:triggers,
+    finishX:finishX, coinCount:coinSlot,
+    beatBlocks: (PHYS.BASE_VX*meta.startSpeed)/PHYS.UNIT*(60/meta.bpm)
+  };
+}
+
+/* Lethal box for a spike. Roughly 40% of the artwork, hugging the base, so a
+   correctly-timed jump never dies on a corner of the drawing. */
+function spikeBox(rec, k, n){
+  var U = PHYS.UNIT, def = rec.def, sc = rec.scale;
+  var cw = (def.w/n)*U*sc, ch = def.h*U*sc;
+  var x0 = rec.x + k*cw, y0 = rec.y;
+  var hw = def.hit.w*U*sc, hh = def.hit.h*U*sc;
+  var b;
+  switch(rec.rot){
+    case 180:  // pointing down: base at the top of the cell
+      b = {x0:x0+(cw-hw)/2, x1:x0+(cw+hw)/2, y0:y0+ch-hh, y1:y0+ch}; break;
+    case 90:   // pointing right: base on the left edge
+      b = {x0:x0, x1:x0+hh, y0:y0+(ch-hw)/2, y1:y0+(ch+hw)/2}; break;
+    case 270:  // pointing left: base on the right edge
+      b = {x0:x0+cw-hh, x1:x0+cw, y0:y0+(ch-hw)/2, y1:y0+(ch+hw)/2}; break;
+    default:   // pointing up
+      b = {x0:x0+(cw-hw)/2, x1:x0+(cw+hw)/2, y0:y0, y1:y0+hh};
+  }
+  b.o = rec; b.sub = k;
+  return b;
+}
+
+/* First index whose x0 could still reach x. Lists are x-sorted and no object is
+   wider than 4 blocks, so stepping back by that much is always enough. */
+function lowerBound(list, x){
+  var lo=0, hi=list.length, target = x - PHYS.UNIT*4;
+  while(lo<hi){ var mid=(lo+hi)>>1; if(list[mid].x0 < target) lo=mid+1; else hi=mid; }
+  return lo;
+}
+
+/* --------------------------------------------------------------------------
+   Simulation state. Everything that changes during an attempt lives here and
+   nothing else does, which is what makes cloneSim() enough for both practice
+   checkpoints and the offline solver's search tree.
+   -------------------------------------------------------------------------- */
+
+function makeEntity(level, mirror){
+  var m = MODES[level.meta.startMode] || MODES.cube;
+  var h = m.h*PHYS.UNIT*HITBOX_SHRINK;
+  return {
+    x: 0,
+    y: mirror ? PHYS.CEIL_BLOCKS*PHYS.UNIT - h/2 : h/2,
+    vx: PHYS.BASE_VX*(level.meta.startSpeed||1),
+    vy: 0,
+    mode: level.meta.startMode||"cube",
+    grav: mirror ? -1 : 1,
+    mini: false,
+    speed: level.meta.startSpeed||1,
+    mirror: !!mirror,
+    onGround: true, groundT: 0,
+    rot: 0, tilt: 0,
+    alive: true,
+    ballCd: -99, robotT: -99, robotHeld: false,
+    dashing: false, dashT: 0,
+    padCd: -1, padCdT: -99,
+    nearOrb: -1, nearOrbT: -99
+  };
+}
+
+function createSim(level){
+  return {
+    level: level,
+    t: 0,
+    ents: [ makeEntity(level, false) ],
+    used: new Uint8Array(level.objects.length),   // orbs and portals fire once per attempt
+    coins: [0,0,0],
+    dead: false, won: false,
+    deathX: 0, deathY: 0,
+    progress: 0,
+    mirrorView: false,
+    hold: false, pressed: false,
+    lastTapT: -99, lastReleaseT: -99,
+    events: []
+  };
+}
+
+function cloneSim(s){
+  var ents = new Array(s.ents.length);
+  for(var i=0;i<s.ents.length;i++){
+    var e = s.ents[i], c = {};
+    for(var k in e) c[k] = e[k];
+    ents[i] = c;
+  }
+  return {
+    level:s.level, t:s.t, ents:ents,
+    used: s.used.slice(0), coins: s.coins.slice(0),
+    dead:s.dead, won:s.won, deathX:s.deathX, deathY:s.deathY,
+    progress:s.progress, mirrorView:s.mirrorView,
+    hold:s.hold, pressed:false, lastTapT:s.lastTapT, lastReleaseT:s.lastReleaseT,
+    events: []
+  };
+}
+
+/* Feed the input edge. Call once per physics step, immediately before stepSim. */
+function simInput(sim, hold){
+  sim.pressed = hold && !sim.hold;
+  if(sim.pressed) sim.lastTapT = sim.t;
+  if(!hold && sim.hold) sim.lastReleaseT = sim.t;
+  sim.hold = hold;
+}
+
+function entBox(e){
+  var m = MODES[e.mode], s = e.mini ? PHYS.MINI.scale : 1;
+  return { w: m.w*PHYS.UNIT*s*HITBOX_SHRINK, h: m.h*PHYS.UNIT*s*HITBOX_SHRINK };
+}
+function entGravity(e){
+  var mul = e.mini ? PHYS.MINI.gravityMul : 1;
+  switch(e.mode){
+    case "ship": return PHYS.SHIP.gravity*mul;
+    case "ball": return PHYS.BALL.gravity*mul;
+    case "ufo":  return PHYS.UFO.gravity*mul;
+    default:     return PHYS.CUBE.gravity*mul;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Swept AABB. The player collapses to a point and the obstacle is inflated by
+   the player's half-extents, which reduces the test to a ray/box slab sweep.
+   The surface normal it returns is what separates a landing (vertical normal)
+   from a fatal wall hit (horizontal normal).
+   -------------------------------------------------------------------------- */
+function sweepPointBox(px,py,dx,dy, x0,y0,x1,y1){
+  var tmin=-Infinity, tmax=Infinity, nx=0, ny=0, a, b, s, tmp;
+
+  if(dx > -1e-9 && dx < 1e-9){
+    if(px <= x0 || px >= x1) return null;            // no overlap and no motion
+  } else {
+    a=(x0-px)/dx; b=(x1-px)/dx; s=-1;
+    if(a>b){ tmp=a; a=b; b=tmp; s=1; }
+    if(a>tmin){ tmin=a; nx=s; ny=0; }
+    if(b<tmax) tmax=b;
+  }
+  if(dy > -1e-9 && dy < 1e-9){
+    if(py <= y0 || py >= y1) return null;
+  } else {
+    a=(y0-py)/dy; b=(y1-py)/dy; s=-1;
+    if(a>b){ tmp=a; a=b; b=tmp; s=1; }
+    if(a>tmin){ tmin=a; nx=0; ny=s; }
+    if(b<tmax) tmax=b;
+  }
+  if(tmin > tmax || tmin >= 1 || tmax <= 0) return null;
+  if(tmin < 0) return null;                          // already inside; depenetrate deals with it
+  return { t:tmin, nx:nx, ny:ny };
+}
+
+var SWEEP_PLANES = [
+  {x0:-1e9, x1:1e9, y0:-1e9, y1:0, plane:"floor"},   // the ground
+  {x0:-1e9, x1:1e9, y0:0,    y1:1e9, plane:"roof"}   // y0 patched to the ceiling height
+];
+
+/* Earliest contact between the player box and any solid, including the two
+   world planes: the floor at y=0 and the roof at y=CEIL_BLOCKS. */
+function sweepWorld(sim, px, py, pw, ph, dx, dy){
+  var best=null, hw=pw/2, hh=ph/2, i, h2;
+  SWEEP_PLANES[1].y0 = PHYS.CEIL_BLOCKS*PHYS.UNIT;
+
+  for(i=0;i<2;i++){
+    var pl = SWEEP_PLANES[i];
+    h2 = sweepPointBox(px,py,dx,dy, pl.x0-hw, pl.y0-hh, pl.x1+hw, pl.y1+hh);
+    if(h2 && (!best || h2.t < best.t)){ best=h2; best.solid=pl; }
+  }
+  var list = sim.level.solids;
+  var minX = (dx<0 ? px+dx : px) - hw, maxX = (dx<0 ? px : px+dx) + hw;
+  for(i=lowerBound(list, minX); i<list.length; i++){
+    var s = list[i];
+    if(s.x0 > maxX) break;
+    h2 = sweepPointBox(px,py,dx,dy, s.x0-hw, s.y0-hh, s.x1+hw, s.y1+hh);
+    if(h2 && (!best || h2.t < best.t)){ best=h2; best.solid=s; }
+  }
+  return best;
+}
+
+/* Push the player out of anything it is already inside, along the shallowest
+   axis. A numerical safety net, mostly for the frame a size portal fires on. */
+function depenetrate(sim, e, pw, ph){
+  var hw=pw/2, hh=ph/2, ceil=PHYS.CEIL_BLOCKS*PHYS.UNIT;
+  if(e.y-hh < 0){ e.y = hh; if(e.vy<0) e.vy=0; }
+  if(e.y+hh > ceil){ e.y = ceil-hh; if(e.vy>0) e.vy=0; }
+  var list = sim.level.solids;
+  for(var i=lowerBound(list, e.x-hw); i<list.length; i++){
+    var s = list[i];
+    if(s.x0 > e.x+hw) break;
+    if(e.x+hw<=s.x0 || e.x-hw>=s.x1 || e.y+hh<=s.y0 || e.y-hh>=s.y1) continue;
+    var ox = Math.min(s.x1-(e.x-hw), (e.x+hw)-s.x0);
+    var oy = Math.min(s.y1-(e.y-hh), (e.y+hh)-s.y0);
+    if(oy <= ox){ e.y = (e.y > (s.y0+s.y1)/2) ? s.y1+hh : s.y0-hh; e.vy = 0; }
+    else       { e.x = (e.x > (s.x0+s.x1)/2) ? s.x1+hw : s.x0-hw; }
+  }
+}
+
+/* Ramps resolve as a height field rather than as boxes: cheaper, and it gives
+   the smooth climb-and-launch that makes slopes feel good instead of sticky. */
+function resolveSlopes(sim, e, ph){
+  var list = sim.level.slopes; if(!list.length) return false;
+  var hh = ph/2, on = false;
+  for(var i=lowerBound(list, e.x); i<list.length; i++){
+    var s = list[i];
+    if(s.x0 > e.x) break;
+    if(e.x < s.x0 || e.x > s.x1) continue;
+    var f = (e.x-s.x0)/(s.x1-s.x0); if(s.rise<0) f = 1-f;
+    var grade = (s.y1-s.y0)/(s.x1-s.x0)*s.rise;
+    if(e.grav > 0){
+      var sy = s.y0 + f*(s.y1-s.y0);
+      if(e.y-hh < sy+2 && e.y-hh > s.y0-18){
+        e.y = sy+hh; on = true;
+        var climb = e.vx*grade; if(climb > e.vy) e.vy = climb;
+      }
+    } else {
+      var syi = s.y1 - f*(s.y1-s.y0);
+      if(e.y+hh > syi-2 && e.y+hh < s.y1+18){
+        e.y = syi-hh; on = true;
+        var climb2 = -e.vx*grade; if(climb2 < e.vy) e.vy = climb2;
+      }
+    }
+  }
+  return on;
+}
+
+/* Move with collision. X and Y are swept separately: a pure-X sweep ignores
+   solids the player is exactly level with, so running across a flat row of
+   blocks never registers as a wall, while genuinely clipping a corner still
+   does. Any horizontal contact is fatal; vertical contact lands or bumps. */
+function moveAndCollide(sim, e, dt){
+  var b = entBox(e), pw = b.w, ph = b.h;
+  var dx = e.vx*dt, dy = e.vy*dt;
+
+  var hit = sweepWorld(sim, e.x, e.y, pw, ph, dx, 0);
+  if(hit){
+    e.x += dx*hit.t - (dx>0?0.01:-0.01);
+    return { fatal:true, landed:false };
+  }
+  e.x += dx;
+
+  var landed = false;
+  hit = sweepWorld(sim, e.x, e.y, pw, ph, 0, dy);
+  if(hit){
+    var s = hit.solid;
+    if(hit.ny > 0){ e.y = s.y1 + ph/2; } else { e.y = s.y0 - ph/2; }
+    landed = (hit.ny*e.grav > 0);
+    e.vy = 0;
+  } else {
+    e.y += dy;
+  }
+
+  if(resolveSlopes(sim, e, ph)) landed = true;
+  depenetrate(sim, e, pw, ph);
+  return { fatal:false, landed:landed };
+}
+
+/* --------------------------------------------------------------------------
+   The six gamemodes, the interactive objects, and the fixed physics step.
+   Gravity is signed: e.grav = +1 pulls toward -y, -1 pulls toward +y, so every
+   rule below reads the same whichever way up the player is.
+   -------------------------------------------------------------------------- */
+
+function ev(sim, type, e, extra){
+  sim.events.push({ type:type, x:e.x, y:e.y, mode:e.mode, extra:extra });
+}
+function clampFall(e, maxFall){
+  if(e.vy*e.grav < -maxFall) e.vy = -maxFall*e.grav;
+}
+function kill(sim, e){
+  if(!e.alive) return;
+  e.alive = false; sim.dead = true;
+  sim.deathX = e.x; sim.deathY = e.y;
+  ev(sim, "death", e);
+}
+
+function applyBoost(sim, e, def){
+  if(def.dash){                       // dash orb: straight line until you let go
+    e.dashing = true; e.dashT = sim.t; e.vy = 0;
+    e.onGround = false; e.groundT = -99;
+    return;
+  }
+  e.dashing = false;
+  if(def.flip) e.grav = -e.grav;
+  if(def.jump){
+    var g = entGravity(e);
+    e.vy = impulseFor(def.jump, g) * e.grav;
+  }
+  e.onGround = false; e.groundT = -99;
+}
+
+/* Size and mode changes keep the player's feet where they were, so a portal
+   never drops you into the floor or pops you through a ceiling. */
+function reshape(e, apply){
+  var ob = entBox(e);
+  var foot = e.grav>0 ? e.y-ob.h/2 : e.y+ob.h/2;
+  apply();
+  var nb = entBox(e);
+  e.y = e.grav>0 ? foot+nb.h/2 : foot-nb.h/2;
+}
+
+function applyPortal(sim, e, def){
+  var ents = sim.ents, i;
+  if(def.mode && def.mode !== e.mode){
+    for(i=0;i<ents.length;i++){
+      (function(t){ reshape(t, function(){ t.mode = def.mode; }); t.vy = 0; t.dashing = false; })(ents[i]);
+    }
+    ev(sim, "portal", e, def.mode);
+  }
+  if(def.grav !== undefined){
+    for(i=0;i<ents.length;i++){
+      var want = ents[i].mirror ? -def.grav : def.grav;
+      if(ents[i].grav !== want){ ents[i].grav = want; ents[i].onGround = false; ents[i].groundT = -99; }
+    }
+    ev(sim, "portal", e, "gravity");
+  }
+  if(def.mini !== undefined && def.mini !== e.mini){
+    for(i=0;i<ents.length;i++){
+      (function(t){ reshape(t, function(){ t.mini = def.mini; }); })(ents[i]);
+    }
+    ev(sim, "portal", e, def.mini?"mini":"big");
+  }
+  if(def.speed){
+    for(i=0;i<ents.length;i++) ents[i].speed = def.speed;
+    ev(sim, "speed", e, def.speed);
+  }
+  if(def.mirror){ sim.mirrorView = !sim.mirrorView; ev(sim, "mirror", e); }
+  if(def.dual){
+    if(sim.ents.length === 1){
+      var c = {}; for(var k in e) c[k] = e[k];
+      c.mirror = true;
+      c.grav = -e.grav;
+      c.y = PHYS.CEIL_BLOCKS*PHYS.UNIT - e.y;
+      c.vy = -e.vy;
+      c.nearOrb = -1; c.padCd = -1; c.onGround = false; c.groundT = -99;
+      sim.ents.push(c);
+    } else {
+      for(i=sim.ents.length-1;i>0;i--) if(sim.ents[i].mirror) sim.ents.splice(i,1);
+    }
+    ev(sim, "portal", e, "dual");
+  }
+}
+
+function checkHazards(sim, e, pw, ph){
+  var hw=pw/2, hh=ph/2, list=sim.level.hazards;
+  for(var i=lowerBound(list, e.x-hw); i<list.length; i++){
+    var z = list[i];
+    if(z.x0 > e.x+hw) break;
+    if(z.r !== undefined){
+      var nx = clamp(z.cx, e.x-hw, e.x+hw) - z.cx;
+      var ny = clamp(z.cy, e.y-hh, e.y+hh) - z.cy;
+      if(nx*nx + ny*ny <= z.r*z.r) return true;
+    } else if(e.x+hw > z.x0 && e.x-hw < z.x1 && e.y+hh > z.y0 && e.y-hh < z.y1){
+      return true;
+    }
+  }
+  return false;
+}
+
+function checkTriggers(sim, e, pw, ph){
+  var hw=pw/2, hh=ph/2, list=sim.level.triggers;
+  for(var i=lowerBound(list, e.x-hw); i<list.length; i++){
+    var tr = list[i];
+    if(tr.x0 > e.x+hw) break;
+    var over;
+    if(tr.r !== undefined){
+      var nx = clamp(tr.cx, e.x-hw, e.x+hw) - tr.cx;
+      var ny = clamp(tr.cy, e.y-hh, e.y+hh) - tr.cy;
+      over = (nx*nx + ny*ny <= tr.r*tr.r);
+    } else {
+      over = (e.x+hw > tr.x0 && e.x-hw < tr.x1 && e.y+hh > tr.y0 && e.y-hh < tr.y1);
+    }
+    if(!over) continue;
+
+    var o = tr.o, def = o.def, idx = o.idx;
+    switch(tr.kind){
+      case "coin":
+        if(!sim.used[idx]){ sim.used[idx]=1; sim.coins[tr.slot]=1; ev(sim,"coin",e); }
+        break;
+      case "pad":
+        // Pads fire on touch. A short cooldown stops one pad firing every step.
+        if(e.padCd !== idx || sim.t - e.padCdT > 0.30){
+          applyBoost(sim, e, def); e.padCd = idx; e.padCdT = sim.t; ev(sim,"pad",e,o.t);
+        }
+        break;
+      case "orb":
+        // Orbs fire only if the button is down while touching them. Remember the
+        // contact so a tap up to TAP_BUFFER later still counts (see below).
+        e.nearOrb = idx; e.nearOrbT = sim.t;
+        if(!sim.used[idx] && (sim.hold || sim.t - sim.lastTapT <= PHYS.TAP_BUFFER)){
+          sim.used[idx]=1; applyBoost(sim, e, def); ev(sim,"orb",e,o.t);
+        }
+        break;
+      case "portal":
+        if(!sim.used[idx]){ sim.used[idx]=1; applyPortal(sim, e, def); }
+        break;
+      case "finish":
+        sim.won = true; ev(sim,"win",e);
+        break;
+    }
+  }
+  // Late half of the orb buffer: a tap just after leaving an orb still counts.
+  if(sim.pressed && e.nearOrb >= 0 && !sim.used[e.nearOrb] &&
+     sim.t - e.nearOrbT <= PHYS.TAP_BUFFER){
+    var ro = sim.level.objects[e.nearOrb];
+    sim.used[e.nearOrb] = 1; applyBoost(sim, e, ro.def); ev(sim,"orb",e,ro.t);
+  }
+}
+
+function updateRotation(sim, e, dt){
+  switch(e.mode){
+    case "cube": case "robot":
+      if(e.onGround){
+        var snap = Math.round(e.rot/90)*90;
+        e.rot += (snap-e.rot) * Math.min(1, dt*22);
+      } else {
+        e.rot += PHYS.CUBE.rotDegPerSec*dt*e.grav;
+      }
+      break;
+    case "ball":
+      e.rot += (e.vx/(PHYS.UNIT*0.5))*(180/Math.PI)*dt*e.grav*0.5;
+      break;
+    case "ship": case "ufo":
+      var want = clamp(e.vy/PHYS.SHIP.maxUp, -1, 1)*PHYS.SHIP.tiltMaxDeg*e.grav;
+      e.tilt += (want-e.tilt)*Math.min(1, dt*14);
+      e.rot = -e.tilt;            // rot is stored screen-clockwise, so nose up when rising
+      break;
+    case "wave":
+      e.rot = (sim.hold ? -45 : 45)*e.grav;
+      break;
+  }
+}
+
+function stepEntity(sim, e, dt){
+  var g = entGravity(e);
+  var miniJ = e.mini ? PHYS.MINI.jumpVMul : 1;
+  e.vx = PHYS.BASE_VX*e.speed;
+
+  if(e.dashing){
+    // Dash orb: a flat line, gravity suspended, until release or timeout.
+    e.vy = 0;
+    if(!sim.hold || sim.t - e.dashT > 1.2) e.dashing = false;
+  } else {
+    var canJump = (e.onGround || sim.t-e.groundT < PHYS.COYOTE) && e.vy*e.grav <= 1;
+    switch(e.mode){
+
+      case "cube":
+        if(sim.hold && canJump){
+          e.vy = PHYS.CUBE.jumpV*miniJ*e.grav;
+          e.onGround = false; e.groundT = -99; ev(sim,"jump",e);
+        } else {
+          e.vy -= g*e.grav*dt;
+        }
+        clampFall(e, PHYS.CUBE.maxFall);
+        break;
+
+      case "robot":
+        if(sim.hold && canJump){
+          e.vy = PHYS.ROBOT.jumpV*miniJ*e.grav;
+          e.robotT = sim.t; e.robotHeld = true;
+          e.onGround = false; e.groundT = -99; ev(sim,"jump",e);
+        } else {
+          // Holding keeps gravity light for up to maxChargeSec: ~1.37x the height.
+          var gm = 1;
+          if(e.robotHeld && sim.hold && sim.t-e.robotT < PHYS.ROBOT.maxChargeSec && e.vy*e.grav > 0) gm = 0.73;
+          else e.robotHeld = false;
+          e.vy -= g*gm*e.grav*dt;
+        }
+        clampFall(e, PHYS.CUBE.maxFall);
+        break;
+
+      case "ball":
+        if(sim.pressed && canJump && sim.t-e.ballCd > PHYS.BALL.flipCooldown){
+          e.grav = -e.grav; e.vy = 0; e.ballCd = sim.t;
+          e.onGround = false; e.groundT = -99; ev(sim,"flip",e);
+        }
+        e.vy -= g*e.grav*dt;
+        clampFall(e, PHYS.BALL.maxFall);
+        break;
+
+      case "ufo":
+        if(sim.pressed){
+          e.vy = PHYS.UFO.impulse*miniJ*e.grav;
+          e.onGround = false; e.groundT = -99; ev(sim,"jump",e);
+        }
+        e.vy -= g*e.grav*dt;
+        clampFall(e, PHYS.UFO.maxFall);
+        break;
+
+      case "ship":
+        e.vy += (sim.hold ? PHYS.SHIP.thrust : -PHYS.SHIP.gravity)*e.grav*dt*(e.mini?1.12:1);
+        if(e.vy*e.grav >  PHYS.SHIP.maxUp)   e.vy =  PHYS.SHIP.maxUp*e.grav;
+        if(e.vy*e.grav < -PHYS.SHIP.maxDown) e.vy = -PHYS.SHIP.maxDown*e.grav;
+        break;
+
+      case "wave":
+        // No inertia at all: a fixed diagonal, direction chosen by the button.
+        e.vy = (sim.hold?1:-1)*e.vx*(e.mini?PHYS.WAVE.miniSlopeRatio:PHYS.WAVE.slopeRatio)*e.grav;
+        break;
+    }
+  }
+
+  var b = entBox(e);
+  var res = moveAndCollide(sim, e, dt);
+
+  if(res.landed){ e.onGround = true; e.groundT = sim.t; }
+  else {
+    var probe = sweepWorld(sim, e.x, e.y, b.w, b.h, 0, -1.6*e.grav);
+    if(probe && probe.ny*e.grav > 0){ e.onGround = true; e.groundT = sim.t; }
+    else e.onGround = false;
+  }
+
+  if(res.fatal){ kill(sim, e); return; }
+  if(checkHazards(sim, e, b.w, b.h)){ kill(sim, e); return; }
+  checkTriggers(sim, e, b.w, b.h);
+  updateRotation(sim, e, dt);
+  if(e.y < PHYS.DEATH_FLOOR*PHYS.UNIT || e.y > (PHYS.CEIL_BLOCKS-PHYS.DEATH_FLOOR)*PHYS.UNIT) kill(sim, e);
+}
+
+function stepSim(sim, dt){
+  if(sim.dead || sim.won){ sim.t += dt; return; }
+  sim.t += dt;
+  for(var i=0;i<sim.ents.length;i++){
+    var e = sim.ents[i];
+    if(e.alive) stepEntity(sim, e, dt);
+  }
+  sim.progress = clamp(sim.ents[0].x / sim.level.finishX, 0, 1);
+}
+
+/* --------------------------------------------------------------------------
+   The three levels, embedded as objects rather than fetched: fetching a JSON
+   file fails under file://, and this game has to survive a double click. The
+   shape is exactly assets/levels/level-schema.json, so levels still import
+   and export cleanly through the editor.
+   Generated by tools/genlevels.js - edit there, not here.
+   -------------------------------------------------------------------------- */
+var LEVEL_SRC = [
+{
+  meta: {
+    "id": "level-01",
+    "name": "First Light",
+    "difficulty": "easy",
+    "bpm": 128,
+    "music": "assets/audio/level-01.mp3",
+    "musicOffsetMs": 0,
+    "startMode": "cube",
+    "startSpeed": 1,
+    "bgColor": "#140B2E",
+    "groundColor": "#241148",
+    "hue": 0,
+    "lengthBlocks": 506
+  },
+  objects: [
+    {"t":"spike","x":15,"y":0},
+    {"t":"spike","x":19,"y":0},
+    {"t":"spike","x":24,"y":0},
+    {"t":"spike","x":29,"y":0},
+    {"t":"spike","x":39,"y":0},
+    {"t":"spike","x":40,"y":0},
+    {"t":"spike","x":49,"y":0},
+    {"t":"block","x":58,"y":0},
+    {"t":"block","x":59,"y":0},
+    {"t":"block","x":60,"y":0},
+    {"t":"block","x":61,"y":0},
+    {"t":"block","x":62,"y":0},
+    {"t":"spike","x":71,"y":0},
+    {"t":"slope","x":78,"y":0},
+    {"t":"block","x":79,"y":0},
+    {"t":"block","x":80,"y":0},
+    {"t":"block","x":81,"y":0},
+    {"t":"block","x":82,"y":0},
+    {"t":"block","x":88,"y":0},
+    {"t":"block","x":88,"y":1},
+    {"t":"block","x":89,"y":0},
+    {"t":"block","x":89,"y":1},
+    {"t":"block","x":90,"y":0},
+    {"t":"block","x":90,"y":1},
+    {"t":"block","x":91,"y":0},
+    {"t":"block","x":91,"y":1},
+    {"t":"block","x":92,"y":0},
+    {"t":"block","x":92,"y":1},
+    {"t":"spike","x":97,"y":0},
+    {"t":"spike","x":98,"y":0},
+    {"t":"spike-mini","x":107,"y":0},
+    {"t":"block-half","x":110,"y":0},
+    {"t":"pad-yellow","x":117,"y":0},
+    {"t":"spike","x":118,"y":0},
+    {"t":"spike","x":119,"y":0},
+    {"t":"spike","x":120,"y":0},
+    {"t":"coin","x":120,"y":3},
+    {"t":"spike","x":131,"y":0},
+    {"t":"orb-yellow","x":143,"y":2},
+    {"t":"spike","x":146,"y":0},
+    {"t":"orb-yellow","x":158,"y":2},
+    {"t":"spike","x":160,"y":0},
+    {"t":"orb-pink","x":161,"y":4},
+    {"t":"spike","x":175,"y":0},
+    {"t":"spike","x":176,"y":0},
+    {"t":"spike","x":185,"y":0},
+    {"t":"portal-ship","x":195,"y":0},
+    {"t":"block","x":198,"y":6},
+    {"t":"block","x":199,"y":6},
+    {"t":"block","x":200,"y":6},
+    {"t":"block","x":201,"y":6},
+    {"t":"block","x":202,"y":6},
+    {"t":"block","x":203,"y":6},
+    {"t":"block","x":204,"y":6},
+    {"t":"block","x":205,"y":6},
+    {"t":"block","x":206,"y":6},
+    {"t":"block","x":207,"y":6},
+    {"t":"block","x":208,"y":6},
+    {"t":"block","x":209,"y":0},
+    {"t":"block","x":209,"y":1},
+    {"t":"spike","x":209,"y":2},
+    {"t":"block","x":209,"y":6},
+    {"t":"block","x":210,"y":6},
+    {"t":"block","x":211,"y":6},
+    {"t":"block","x":212,"y":6},
+    {"t":"block","x":213,"y":6},
+    {"t":"block","x":214,"y":6},
+    {"t":"block","x":215,"y":6},
+    {"t":"block","x":216,"y":6},
+    {"t":"spike","x":217,"y":3,"rot":180},
+    {"t":"block","x":217,"y":4},
+    {"t":"block","x":217,"y":5},
+    {"t":"block","x":217,"y":6},
+    {"t":"block","x":218,"y":6},
+    {"t":"block","x":219,"y":6},
+    {"t":"block","x":220,"y":6},
+    {"t":"block","x":221,"y":6},
+    {"t":"block","x":222,"y":6},
+    {"t":"block","x":223,"y":6},
+    {"t":"block","x":224,"y":6},
+    {"t":"block","x":225,"y":0},
+    {"t":"block","x":225,"y":1},
+    {"t":"block","x":225,"y":2},
+    {"t":"spike","x":225,"y":3},
+    {"t":"block","x":225,"y":6},
+    {"t":"block","x":226,"y":6},
+    {"t":"block","x":227,"y":6},
+    {"t":"block","x":228,"y":6},
+    {"t":"block","x":229,"y":6},
+    {"t":"block","x":230,"y":6},
+    {"t":"block","x":231,"y":6},
+    {"t":"block","x":232,"y":6},
+    {"t":"spike","x":233,"y":3,"rot":180},
+    {"t":"block","x":233,"y":4},
+    {"t":"block","x":233,"y":5},
+    {"t":"block","x":233,"y":6},
+    {"t":"block","x":234,"y":6},
+    {"t":"coin","x":235,"y":5},
+    {"t":"block","x":235,"y":6},
+    {"t":"block","x":236,"y":6},
+    {"t":"block","x":237,"y":6},
+    {"t":"block","x":238,"y":6},
+    {"t":"block","x":239,"y":6},
+    {"t":"block","x":240,"y":6},
+    {"t":"block","x":241,"y":0},
+    {"t":"block","x":241,"y":1},
+    {"t":"spike","x":241,"y":2},
+    {"t":"block","x":241,"y":6},
+    {"t":"block","x":242,"y":6},
+    {"t":"block","x":243,"y":6},
+    {"t":"block","x":244,"y":6},
+    {"t":"block","x":245,"y":6},
+    {"t":"block","x":246,"y":6},
+    {"t":"block","x":247,"y":6},
+    {"t":"block","x":248,"y":6},
+    {"t":"spike","x":249,"y":2,"rot":180},
+    {"t":"block","x":249,"y":3},
+    {"t":"block","x":249,"y":4},
+    {"t":"block","x":249,"y":5},
+    {"t":"block","x":249,"y":6},
+    {"t":"block","x":250,"y":6},
+    {"t":"block","x":251,"y":6},
+    {"t":"block","x":252,"y":6},
+    {"t":"block","x":253,"y":6},
+    {"t":"block","x":254,"y":6},
+    {"t":"block","x":255,"y":6},
+    {"t":"block","x":256,"y":6},
+    {"t":"block","x":257,"y":0},
+    {"t":"block","x":257,"y":1},
+    {"t":"spike","x":257,"y":2},
+    {"t":"block","x":257,"y":6},
+    {"t":"block","x":258,"y":6},
+    {"t":"block","x":259,"y":6},
+    {"t":"block","x":260,"y":6},
+    {"t":"block","x":261,"y":6},
+    {"t":"block","x":262,"y":6},
+    {"t":"block","x":263,"y":6},
+    {"t":"block","x":264,"y":6},
+    {"t":"block","x":265,"y":6},
+    {"t":"block","x":266,"y":6},
+    {"t":"block","x":267,"y":6},
+    {"t":"block","x":268,"y":6},
+    {"t":"block","x":269,"y":6},
+    {"t":"block","x":270,"y":6},
+    {"t":"portal-cube","x":278,"y":0},
+    {"t":"portal-gravity-up","x":287,"y":0},
+    {"t":"block","x":289,"y":6},
+    {"t":"block","x":290,"y":6},
+    {"t":"block","x":291,"y":6},
+    {"t":"block","x":292,"y":6},
+    {"t":"block","x":293,"y":6},
+    {"t":"block","x":294,"y":6},
+    {"t":"block","x":295,"y":6},
+    {"t":"block","x":296,"y":6},
+    {"t":"block","x":297,"y":6},
+    {"t":"block","x":298,"y":6},
+    {"t":"block","x":299,"y":6},
+    {"t":"block","x":300,"y":6},
+    {"t":"spike","x":301,"y":5,"rot":180},
+    {"t":"block","x":301,"y":6},
+    {"t":"block","x":302,"y":6},
+    {"t":"block","x":303,"y":6},
+    {"t":"block","x":304,"y":6},
+    {"t":"block","x":305,"y":6},
+    {"t":"coin","x":306,"y":5},
+    {"t":"block","x":306,"y":6},
+    {"t":"block","x":307,"y":6},
+    {"t":"block","x":308,"y":6},
+    {"t":"block","x":309,"y":6},
+    {"t":"spike","x":310,"y":5,"rot":180},
+    {"t":"block","x":310,"y":6},
+    {"t":"block","x":311,"y":6},
+    {"t":"block","x":312,"y":6},
+    {"t":"block","x":313,"y":6},
+    {"t":"block","x":314,"y":6},
+    {"t":"block","x":315,"y":6},
+    {"t":"block","x":316,"y":6},
+    {"t":"block","x":317,"y":6},
+    {"t":"block","x":318,"y":6},
+    {"t":"block","x":319,"y":6},
+    {"t":"spike","x":320,"y":5,"rot":180},
+    {"t":"block","x":320,"y":6},
+    {"t":"block","x":321,"y":6},
+    {"t":"block","x":322,"y":6},
+    {"t":"block","x":323,"y":6},
+    {"t":"block","x":324,"y":6},
+    {"t":"block","x":325,"y":6},
+    {"t":"block","x":326,"y":6},
+    {"t":"block","x":327,"y":6},
+    {"t":"portal-gravity-down","x":329,"y":0},
+    {"t":"portal-wave","x":336,"y":0},
+    {"t":"block","x":339,"y":6},
+    {"t":"block","x":340,"y":6},
+    {"t":"block","x":341,"y":6},
+    {"t":"block","x":342,"y":6},
+    {"t":"block","x":343,"y":6},
+    {"t":"block","x":344,"y":6},
+    {"t":"block","x":345,"y":6},
+    {"t":"block","x":346,"y":6},
+    {"t":"block","x":347,"y":6},
+    {"t":"block","x":348,"y":0},
+    {"t":"spike","x":348,"y":1},
+    {"t":"block","x":348,"y":6},
+    {"t":"block","x":349,"y":6},
+    {"t":"block","x":350,"y":6},
+    {"t":"block","x":351,"y":6},
+    {"t":"block","x":352,"y":6},
+    {"t":"block","x":353,"y":6},
+    {"t":"block","x":354,"y":6},
+    {"t":"block","x":355,"y":6},
+    {"t":"spike","x":356,"y":4,"rot":180},
+    {"t":"block","x":356,"y":5},
+    {"t":"block","x":356,"y":6},
+    {"t":"block","x":357,"y":6},
+    {"t":"block","x":358,"y":6},
+    {"t":"block","x":359,"y":6},
+    {"t":"block","x":360,"y":6},
+    {"t":"block","x":361,"y":6},
+    {"t":"block","x":362,"y":6},
+    {"t":"block","x":363,"y":6},
+    {"t":"block","x":364,"y":0},
+    {"t":"spike","x":364,"y":1},
+    {"t":"block","x":364,"y":6},
+    {"t":"block","x":365,"y":6},
+    {"t":"block","x":366,"y":6},
+    {"t":"block","x":367,"y":6},
+    {"t":"block","x":368,"y":6},
+    {"t":"block","x":369,"y":6},
+    {"t":"block","x":370,"y":6},
+    {"t":"block","x":371,"y":6},
+    {"t":"spike","x":372,"y":4,"rot":180},
+    {"t":"block","x":372,"y":5},
+    {"t":"block","x":372,"y":6},
+    {"t":"block","x":373,"y":6},
+    {"t":"block","x":374,"y":6},
+    {"t":"block","x":375,"y":6},
+    {"t":"block","x":376,"y":6},
+    {"t":"block","x":377,"y":6},
+    {"t":"block","x":378,"y":6},
+    {"t":"block","x":379,"y":6},
+    {"t":"block","x":380,"y":0},
+    {"t":"spike","x":380,"y":1},
+    {"t":"block","x":380,"y":6},
+    {"t":"block","x":381,"y":6},
+    {"t":"block","x":382,"y":6},
+    {"t":"block","x":383,"y":6},
+    {"t":"block","x":384,"y":6},
+    {"t":"block","x":385,"y":6},
+    {"t":"block","x":386,"y":6},
+    {"t":"block","x":387,"y":6},
+    {"t":"portal-cube","x":394,"y":0},
+    {"t":"spike","x":409,"y":0},
+    {"t":"spike","x":414,"y":0},
+    {"t":"spike","x":415,"y":0},
+    {"t":"pad-pink","x":424,"y":0},
+    {"t":"spike","x":425,"y":0},
+    {"t":"spike","x":426,"y":0},
+    {"t":"block","x":433,"y":0},
+    {"t":"block","x":434,"y":0},
+    {"t":"block","x":435,"y":0},
+    {"t":"block","x":436,"y":0},
+    {"t":"spike","x":443,"y":0},
+    {"t":"spike","x":444,"y":0},
+    {"t":"spike","x":453,"y":0},
+    {"t":"spike-triple","x":463,"y":0},
+    {"t":"block","x":472,"y":0},
+    {"t":"block","x":473,"y":0},
+    {"t":"block","x":474,"y":0},
+    {"t":"block","x":475,"y":0},
+    {"t":"block","x":476,"y":0},
+    {"t":"spike","x":482,"y":0},
+    {"t":"spike","x":483,"y":0},
+    {"t":"spike","x":492,"y":0},
+    {"t":"finish","x":506,"y":0}
+  ]
+},
+{
+  meta: {
+    "id": "level-02",
+    "name": "Static Bloom",
+    "difficulty": "normal",
+    "bpm": 140,
+    "music": "assets/audio/level-02.mp3",
+    "musicOffsetMs": 0,
+    "startMode": "cube",
+    "startSpeed": 1,
+    "bgColor": "#17103a",
+    "groundColor": "#2a1657",
+    "hue": 24,
+    "lengthBlocks": 636
+  },
+  objects: [
+    {"t":"spike","x":13,"y":0},
+    {"t":"spike","x":18,"y":0},
+    {"t":"spike","x":22,"y":0},
+    {"t":"spike","x":27,"y":0},
+    {"t":"spike","x":28,"y":0},
+    {"t":"block","x":36,"y":0},
+    {"t":"block","x":37,"y":0},
+    {"t":"block","x":38,"y":0},
+    {"t":"block","x":39,"y":0},
+    {"t":"spike-triple","x":45,"y":0},
+    {"t":"orb-yellow","x":55,"y":2},
+    {"t":"spike","x":58,"y":0},
+    {"t":"saw","x":67,"y":0},
+    {"t":"spike","x":76,"y":0},
+    {"t":"spike","x":77,"y":0},
+    {"t":"speed-slow","x":82,"y":0},
+    {"t":"spike","x":86,"y":0},
+    {"t":"spike","x":87,"y":0},
+    {"t":"spike-triple","x":93,"y":0},
+    {"t":"speed-fast","x":100,"y":0},
+    {"t":"spike","x":108,"y":0},
+    {"t":"spike","x":117,"y":0},
+    {"t":"spike","x":118,"y":0},
+    {"t":"portal-ball","x":125,"y":0},
+    {"t":"block","x":129,"y":5},
+    {"t":"block","x":130,"y":5},
+    {"t":"block","x":131,"y":5},
+    {"t":"block","x":132,"y":5},
+    {"t":"block","x":133,"y":5},
+    {"t":"block","x":134,"y":5},
+    {"t":"block","x":135,"y":5},
+    {"t":"block","x":136,"y":5},
+    {"t":"block","x":137,"y":5},
+    {"t":"block","x":138,"y":5},
+    {"t":"block","x":139,"y":5},
+    {"t":"block","x":140,"y":5},
+    {"t":"spike","x":141,"y":0},
+    {"t":"block","x":141,"y":5},
+    {"t":"spike","x":142,"y":0},
+    {"t":"block","x":142,"y":5},
+    {"t":"block","x":143,"y":5},
+    {"t":"block","x":144,"y":5},
+    {"t":"block","x":145,"y":5},
+    {"t":"block","x":146,"y":5},
+    {"t":"block","x":147,"y":5},
+    {"t":"block","x":148,"y":5},
+    {"t":"block","x":149,"y":5},
+    {"t":"block","x":150,"y":5},
+    {"t":"block","x":151,"y":5},
+    {"t":"spike","x":152,"y":4,"rot":180},
+    {"t":"block","x":152,"y":5},
+    {"t":"spike","x":153,"y":4,"rot":180},
+    {"t":"block","x":153,"y":5},
+    {"t":"block","x":154,"y":5},
+    {"t":"block","x":155,"y":5},
+    {"t":"block","x":156,"y":5},
+    {"t":"block","x":157,"y":5},
+    {"t":"block","x":158,"y":5},
+    {"t":"block","x":159,"y":5},
+    {"t":"block","x":160,"y":5},
+    {"t":"block","x":161,"y":5},
+    {"t":"coin","x":162,"y":2},
+    {"t":"block","x":162,"y":5},
+    {"t":"spike","x":163,"y":0},
+    {"t":"block","x":163,"y":5},
+    {"t":"spike","x":164,"y":0},
+    {"t":"block","x":164,"y":5},
+    {"t":"block","x":165,"y":5},
+    {"t":"block","x":166,"y":5},
+    {"t":"block","x":167,"y":5},
+    {"t":"block","x":168,"y":5},
+    {"t":"block","x":169,"y":5},
+    {"t":"block","x":170,"y":5},
+    {"t":"block","x":171,"y":5},
+    {"t":"block","x":172,"y":5},
+    {"t":"block","x":173,"y":5},
+    {"t":"spike","x":174,"y":4,"rot":180},
+    {"t":"block","x":174,"y":5},
+    {"t":"spike","x":175,"y":4,"rot":180},
+    {"t":"block","x":175,"y":5},
+    {"t":"block","x":176,"y":5},
+    {"t":"block","x":177,"y":5},
+    {"t":"block","x":178,"y":5},
+    {"t":"block","x":179,"y":5},
+    {"t":"block","x":180,"y":5},
+    {"t":"block","x":181,"y":5},
+    {"t":"block","x":182,"y":5},
+    {"t":"block","x":183,"y":5},
+    {"t":"block","x":184,"y":5},
+    {"t":"spike","x":185,"y":0},
+    {"t":"block","x":185,"y":5},
+    {"t":"spike","x":186,"y":0},
+    {"t":"portal-cube","x":186,"y":0},
+    {"t":"block","x":186,"y":5},
+    {"t":"block","x":187,"y":5},
+    {"t":"spike","x":188,"y":0},
+    {"t":"block","x":188,"y":5},
+    {"t":"block","x":189,"y":5},
+    {"t":"block","x":190,"y":5},
+    {"t":"block","x":191,"y":5},
+    {"t":"block","x":192,"y":5},
+    {"t":"block","x":193,"y":5},
+    {"t":"block","x":194,"y":5},
+    {"t":"speed-normal","x":197,"y":0},
+    {"t":"pad-blue","x":197,"y":0},
+    {"t":"block","x":200,"y":6},
+    {"t":"block","x":201,"y":6},
+    {"t":"block","x":202,"y":6},
+    {"t":"block","x":203,"y":6},
+    {"t":"block","x":204,"y":6},
+    {"t":"block","x":205,"y":6},
+    {"t":"block","x":206,"y":6},
+    {"t":"block","x":207,"y":6},
+    {"t":"block","x":208,"y":6},
+    {"t":"block","x":209,"y":6},
+    {"t":"block","x":210,"y":6},
+    {"t":"spike","x":211,"y":5,"rot":180},
+    {"t":"block","x":211,"y":6},
+    {"t":"block","x":212,"y":6},
+    {"t":"block","x":213,"y":6},
+    {"t":"block","x":214,"y":6},
+    {"t":"block","x":215,"y":6},
+    {"t":"block","x":216,"y":6},
+    {"t":"block","x":217,"y":6},
+    {"t":"block","x":218,"y":6},
+    {"t":"spike","x":219,"y":5,"rot":180},
+    {"t":"block","x":219,"y":6},
+    {"t":"block","x":220,"y":6},
+    {"t":"block","x":221,"y":6},
+    {"t":"block","x":222,"y":6},
+    {"t":"block","x":223,"y":6},
+    {"t":"block","x":224,"y":6},
+    {"t":"block","x":225,"y":6},
+    {"t":"spike","x":226,"y":5,"rot":180},
+    {"t":"block","x":226,"y":6},
+    {"t":"block","x":227,"y":6},
+    {"t":"block","x":228,"y":6},
+    {"t":"block","x":229,"y":6},
+    {"t":"block","x":230,"y":6},
+    {"t":"portal-gravity-down","x":232,"y":0},
+    {"t":"spike","x":237,"y":0},
+    {"t":"spike","x":242,"y":0},
+    {"t":"spike","x":243,"y":0},
+    {"t":"portal-ufo","x":250,"y":0},
+    {"t":"block","x":253,"y":7},
+    {"t":"block","x":254,"y":7},
+    {"t":"block","x":255,"y":7},
+    {"t":"block","x":256,"y":7},
+    {"t":"block","x":257,"y":7},
+    {"t":"block","x":258,"y":7},
+    {"t":"block","x":259,"y":7},
+    {"t":"block","x":260,"y":7},
+    {"t":"block","x":261,"y":7},
+    {"t":"block","x":262,"y":7},
+    {"t":"block","x":263,"y":7},
+    {"t":"block","x":264,"y":0},
+    {"t":"block","x":264,"y":1},
+    {"t":"spike","x":264,"y":2},
+    {"t":"block","x":264,"y":7},
+    {"t":"block","x":265,"y":7},
+    {"t":"block","x":266,"y":7},
+    {"t":"block","x":267,"y":7},
+    {"t":"block","x":268,"y":7},
+    {"t":"block","x":269,"y":7},
+    {"t":"block","x":270,"y":7},
+    {"t":"block","x":271,"y":7},
+    {"t":"block","x":272,"y":7},
+    {"t":"spike","x":273,"y":4,"rot":180},
+    {"t":"block","x":273,"y":5},
+    {"t":"block","x":273,"y":6},
+    {"t":"block","x":273,"y":7},
+    {"t":"block","x":274,"y":7},
+    {"t":"block","x":275,"y":7},
+    {"t":"block","x":276,"y":7},
+    {"t":"block","x":277,"y":7},
+    {"t":"block","x":278,"y":7},
+    {"t":"block","x":279,"y":7},
+    {"t":"block","x":280,"y":7},
+    {"t":"block","x":281,"y":7},
+    {"t":"block","x":282,"y":0},
+    {"t":"block","x":282,"y":1},
+    {"t":"block","x":282,"y":2},
+    {"t":"spike","x":282,"y":3},
+    {"t":"block","x":282,"y":7},
+    {"t":"block","x":283,"y":7},
+    {"t":"block","x":284,"y":7},
+    {"t":"block","x":285,"y":7},
+    {"t":"block","x":286,"y":7},
+    {"t":"block","x":287,"y":7},
+    {"t":"block","x":288,"y":7},
+    {"t":"block","x":289,"y":7},
+    {"t":"block","x":290,"y":7},
+    {"t":"spike","x":291,"y":4,"rot":180},
+    {"t":"block","x":291,"y":5},
+    {"t":"block","x":291,"y":6},
+    {"t":"block","x":291,"y":7},
+    {"t":"block","x":292,"y":7},
+    {"t":"block","x":293,"y":7},
+    {"t":"block","x":294,"y":7},
+    {"t":"coin","x":295,"y":6},
+    {"t":"block","x":295,"y":7},
+    {"t":"block","x":296,"y":7},
+    {"t":"block","x":297,"y":7},
+    {"t":"block","x":298,"y":7},
+    {"t":"block","x":299,"y":7},
+    {"t":"block","x":300,"y":0},
+    {"t":"block","x":300,"y":1},
+    {"t":"spike","x":300,"y":2},
+    {"t":"block","x":300,"y":7},
+    {"t":"block","x":301,"y":7},
+    {"t":"block","x":302,"y":7},
+    {"t":"block","x":303,"y":7},
+    {"t":"block","x":304,"y":7},
+    {"t":"block","x":305,"y":7},
+    {"t":"block","x":306,"y":7},
+    {"t":"block","x":307,"y":7},
+    {"t":"block","x":308,"y":7},
+    {"t":"block","x":309,"y":7},
+    {"t":"block","x":310,"y":7},
+    {"t":"portal-cube","x":313,"y":0},
+    {"t":"speed-faster","x":322,"y":0},
+    {"t":"spike","x":332,"y":0},
+    {"t":"saw","x":342,"y":0},
+    {"t":"block","x":352,"y":0},
+    {"t":"block","x":353,"y":0},
+    {"t":"block","x":354,"y":0},
+    {"t":"block","x":355,"y":0},
+    {"t":"block","x":356,"y":0},
+    {"t":"saw","x":362,"y":3},
+    {"t":"spike","x":372,"y":0},
+    {"t":"spike","x":373,"y":0},
+    {"t":"pad-yellow","x":382,"y":0},
+    {"t":"spike","x":383,"y":0},
+    {"t":"spike","x":384,"y":0},
+    {"t":"spike","x":385,"y":0},
+    {"t":"spike","x":386,"y":0},
+    {"t":"spike","x":402,"y":0},
+    {"t":"speed-normal","x":409,"y":0},
+    {"t":"portal-robot","x":418,"y":0},
+    {"t":"block","x":427,"y":0},
+    {"t":"block","x":427,"y":1},
+    {"t":"block","x":428,"y":0},
+    {"t":"block","x":428,"y":1},
+    {"t":"block","x":429,"y":0},
+    {"t":"block","x":429,"y":1},
+    {"t":"block","x":430,"y":0},
+    {"t":"block","x":430,"y":1},
+    {"t":"block","x":431,"y":0},
+    {"t":"block","x":431,"y":1},
+    {"t":"spike","x":438,"y":0},
+    {"t":"spike","x":439,"y":0},
+    {"t":"block","x":447,"y":0},
+    {"t":"block","x":447,"y":1},
+    {"t":"block","x":448,"y":0},
+    {"t":"block","x":448,"y":1},
+    {"t":"block","x":449,"y":0},
+    {"t":"block","x":449,"y":1},
+    {"t":"block","x":450,"y":0},
+    {"t":"block","x":450,"y":1},
+    {"t":"block","x":451,"y":0},
+    {"t":"block","x":451,"y":1},
+    {"t":"spike-triple","x":458,"y":0},
+    {"t":"portal-cube","x":467,"y":0},
+    {"t":"spike","x":474,"y":0},
+    {"t":"spike","x":478,"y":0},
+    {"t":"spike","x":479,"y":0},
+    {"t":"spike","x":489,"y":0},
+    {"t":"pad-blue","x":498,"y":0},
+    {"t":"block","x":501,"y":6},
+    {"t":"block","x":502,"y":6},
+    {"t":"block","x":503,"y":6},
+    {"t":"block","x":504,"y":6},
+    {"t":"block","x":505,"y":6},
+    {"t":"block","x":506,"y":6},
+    {"t":"block","x":507,"y":6},
+    {"t":"block","x":508,"y":6},
+    {"t":"block","x":509,"y":6},
+    {"t":"block","x":510,"y":6},
+    {"t":"spike","x":511,"y":5,"rot":180},
+    {"t":"block","x":511,"y":6},
+    {"t":"block","x":512,"y":6},
+    {"t":"block","x":513,"y":6},
+    {"t":"block","x":514,"y":6},
+    {"t":"coin","x":515,"y":5},
+    {"t":"block","x":515,"y":6},
+    {"t":"block","x":516,"y":6},
+    {"t":"block","x":517,"y":6},
+    {"t":"block","x":518,"y":6},
+    {"t":"spike","x":519,"y":5,"rot":180},
+    {"t":"block","x":519,"y":6},
+    {"t":"block","x":520,"y":6},
+    {"t":"block","x":521,"y":6},
+    {"t":"block","x":522,"y":6},
+    {"t":"block","x":523,"y":6},
+    {"t":"block","x":524,"y":6},
+    {"t":"block","x":525,"y":6},
+    {"t":"block","x":526,"y":6},
+    {"t":"block","x":527,"y":6},
+    {"t":"portal-gravity-down","x":529,"y":0},
+    {"t":"spike","x":534,"y":0},
+    {"t":"spike","x":535,"y":0},
+    {"t":"block","x":543,"y":0},
+    {"t":"block","x":544,"y":0},
+    {"t":"block","x":545,"y":0},
+    {"t":"block","x":546,"y":0},
+    {"t":"block","x":547,"y":0},
+    {"t":"spike-triple","x":551,"y":0},
+    {"t":"spike","x":562,"y":0},
+    {"t":"orb-yellow","x":562,"y":2},
+    {"t":"spike","x":565,"y":0},
+    {"t":"orb-yellow","x":565,"y":4},
+    {"t":"spike","x":568,"y":0},
+    {"t":"spike","x":578,"y":0},
+    {"t":"spike","x":585,"y":0},
+    {"t":"spike","x":586,"y":0},
+    {"t":"saw","x":594,"y":0},
+    {"t":"block","x":603,"y":0},
+    {"t":"block","x":603,"y":1},
+    {"t":"block","x":604,"y":0},
+    {"t":"block","x":604,"y":1},
+    {"t":"block","x":605,"y":0},
+    {"t":"block","x":605,"y":1},
+    {"t":"block","x":606,"y":0},
+    {"t":"block","x":606,"y":1},
+    {"t":"block","x":607,"y":0},
+    {"t":"block","x":607,"y":1},
+    {"t":"spike","x":614,"y":0},
+    {"t":"spike","x":615,"y":0},
+    {"t":"spike","x":623,"y":0},
+    {"t":"finish","x":636,"y":0}
+  ]
+},
+{
+  meta: {
+    "id": "level-03",
+    "name": "Overdrive",
+    "difficulty": "hard",
+    "bpm": 160,
+    "music": "assets/audio/level-03.mp3",
+    "musicOffsetMs": 0,
+    "startMode": "cube",
+    "startSpeed": 1.243,
+    "bgColor": "#1b0a33",
+    "groundColor": "#341063",
+    "hue": 300,
+    "lengthBlocks": 757
+  },
+  objects: [
+    {"t":"spike","x":15,"y":0},
+    {"t":"spike","x":19,"y":0},
+    {"t":"spike","x":24,"y":0},
+    {"t":"spike","x":29,"y":0},
+    {"t":"spike","x":39,"y":0},
+    {"t":"spike","x":40,"y":0},
+    {"t":"block","x":48,"y":0},
+    {"t":"block","x":49,"y":0},
+    {"t":"block","x":50,"y":0},
+    {"t":"block","x":51,"y":0},
+    {"t":"block","x":52,"y":0},
+    {"t":"spike-triple","x":58,"y":0},
+    {"t":"saw","x":68,"y":0},
+    {"t":"spike","x":80,"y":0},
+    {"t":"orb-yellow","x":80,"y":2},
+    {"t":"spike","x":83,"y":0},
+    {"t":"orb-yellow","x":83,"y":4},
+    {"t":"orb-pink","x":85,"y":6},
+    {"t":"spike","x":86,"y":0},
+    {"t":"coin","x":88,"y":8},
+    {"t":"spike","x":89,"y":0},
+    {"t":"spike","x":102,"y":0},
+    {"t":"portal-mini","x":111,"y":0},
+    {"t":"block","x":119,"y":3},
+    {"t":"block","x":120,"y":3},
+    {"t":"block","x":121,"y":3},
+    {"t":"block","x":122,"y":3},
+    {"t":"block","x":123,"y":3},
+    {"t":"block","x":124,"y":3},
+    {"t":"block","x":125,"y":3},
+    {"t":"block","x":126,"y":3},
+    {"t":"spike","x":127,"y":0},
+    {"t":"block","x":127,"y":3},
+    {"t":"spike","x":128,"y":0},
+    {"t":"block","x":128,"y":3},
+    {"t":"block","x":129,"y":3},
+    {"t":"block","x":130,"y":3},
+    {"t":"block","x":131,"y":3},
+    {"t":"block","x":132,"y":3},
+    {"t":"block","x":133,"y":3},
+    {"t":"block","x":134,"y":3},
+    {"t":"block","x":135,"y":3},
+    {"t":"block","x":136,"y":3},
+    {"t":"spike","x":137,"y":0},
+    {"t":"block","x":137,"y":3},
+    {"t":"spike","x":138,"y":0},
+    {"t":"block","x":138,"y":3},
+    {"t":"block","x":139,"y":3},
+    {"t":"block","x":140,"y":3},
+    {"t":"block","x":141,"y":3},
+    {"t":"block","x":142,"y":3},
+    {"t":"block","x":143,"y":3},
+    {"t":"block","x":144,"y":3},
+    {"t":"block","x":145,"y":3},
+    {"t":"block","x":146,"y":3},
+    {"t":"block","x":147,"y":3},
+    {"t":"portal-big","x":150,"y":0},
+    {"t":"spike","x":157,"y":0},
+    {"t":"spike","x":158,"y":0},
+    {"t":"portal-wave","x":165,"y":0},
+    {"t":"block","x":168,"y":7},
+    {"t":"block","x":169,"y":7},
+    {"t":"block","x":170,"y":7},
+    {"t":"block","x":171,"y":7},
+    {"t":"block","x":172,"y":7},
+    {"t":"block","x":173,"y":7},
+    {"t":"block","x":174,"y":7},
+    {"t":"block","x":175,"y":7},
+    {"t":"block","x":176,"y":7},
+    {"t":"block","x":177,"y":7},
+    {"t":"block","x":178,"y":0},
+    {"t":"spike","x":178,"y":1},
+    {"t":"block","x":178,"y":7},
+    {"t":"block","x":179,"y":7},
+    {"t":"block","x":180,"y":7},
+    {"t":"block","x":181,"y":7},
+    {"t":"block","x":182,"y":7},
+    {"t":"block","x":183,"y":7},
+    {"t":"block","x":184,"y":7},
+    {"t":"spike","x":185,"y":5,"rot":180},
+    {"t":"block","x":185,"y":6},
+    {"t":"block","x":185,"y":7},
+    {"t":"block","x":186,"y":7},
+    {"t":"block","x":187,"y":7},
+    {"t":"block","x":188,"y":7},
+    {"t":"block","x":189,"y":7},
+    {"t":"block","x":190,"y":7},
+    {"t":"block","x":191,"y":7},
+    {"t":"block","x":192,"y":0},
+    {"t":"spike","x":192,"y":1},
+    {"t":"block","x":192,"y":7},
+    {"t":"block","x":193,"y":7},
+    {"t":"block","x":194,"y":7},
+    {"t":"block","x":195,"y":7},
+    {"t":"block","x":196,"y":7},
+    {"t":"block","x":197,"y":7},
+    {"t":"block","x":198,"y":7},
+    {"t":"spike","x":199,"y":5,"rot":180},
+    {"t":"block","x":199,"y":6},
+    {"t":"block","x":199,"y":7},
+    {"t":"portal-mini","x":200,"y":3},
+    {"t":"block","x":200,"y":7},
+    {"t":"block","x":201,"y":7},
+    {"t":"block","x":202,"y":7},
+    {"t":"block","x":203,"y":7},
+    {"t":"block","x":204,"y":7},
+    {"t":"block","x":205,"y":7},
+    {"t":"block","x":206,"y":0},
+    {"t":"spike","x":206,"y":1},
+    {"t":"block","x":206,"y":7},
+    {"t":"block","x":207,"y":7},
+    {"t":"block","x":208,"y":7},
+    {"t":"block","x":209,"y":7},
+    {"t":"block","x":210,"y":7},
+    {"t":"block","x":211,"y":7},
+    {"t":"block","x":212,"y":7},
+    {"t":"spike","x":213,"y":5,"rot":180},
+    {"t":"block","x":213,"y":6},
+    {"t":"block","x":213,"y":7},
+    {"t":"coin","x":214,"y":3},
+    {"t":"block","x":214,"y":7},
+    {"t":"block","x":215,"y":7},
+    {"t":"block","x":216,"y":7},
+    {"t":"block","x":217,"y":7},
+    {"t":"block","x":218,"y":7},
+    {"t":"block","x":219,"y":7},
+    {"t":"block","x":220,"y":0},
+    {"t":"spike","x":220,"y":1},
+    {"t":"block","x":220,"y":7},
+    {"t":"block","x":221,"y":7},
+    {"t":"block","x":222,"y":7},
+    {"t":"block","x":223,"y":7},
+    {"t":"block","x":224,"y":7},
+    {"t":"block","x":225,"y":7},
+    {"t":"block","x":226,"y":7},
+    {"t":"spike","x":227,"y":5,"rot":180},
+    {"t":"block","x":227,"y":6},
+    {"t":"block","x":227,"y":7},
+    {"t":"block","x":228,"y":7},
+    {"t":"block","x":229,"y":7},
+    {"t":"portal-big","x":230,"y":3},
+    {"t":"block","x":230,"y":7},
+    {"t":"block","x":231,"y":7},
+    {"t":"block","x":232,"y":7},
+    {"t":"block","x":233,"y":7},
+    {"t":"block","x":234,"y":0},
+    {"t":"spike","x":234,"y":1},
+    {"t":"block","x":234,"y":7},
+    {"t":"block","x":235,"y":7},
+    {"t":"block","x":236,"y":7},
+    {"t":"block","x":237,"y":7},
+    {"t":"block","x":238,"y":7},
+    {"t":"block","x":239,"y":7},
+    {"t":"block","x":240,"y":7},
+    {"t":"block","x":241,"y":7},
+    {"t":"block","x":242,"y":7},
+    {"t":"block","x":243,"y":7},
+    {"t":"block","x":244,"y":7},
+    {"t":"portal-cube","x":247,"y":0},
+    {"t":"portal-dual","x":257,"y":0},
+    {"t":"block","x":259,"y":12},
+    {"t":"block","x":260,"y":12},
+    {"t":"block","x":261,"y":12},
+    {"t":"block","x":262,"y":12},
+    {"t":"block","x":263,"y":12},
+    {"t":"block","x":264,"y":12},
+    {"t":"block","x":265,"y":12},
+    {"t":"block","x":266,"y":12},
+    {"t":"block","x":267,"y":12},
+    {"t":"block","x":268,"y":12},
+    {"t":"block","x":269,"y":12},
+    {"t":"block","x":270,"y":12},
+    {"t":"spike","x":271,"y":0},
+    {"t":"spike","x":271,"y":11,"rot":180},
+    {"t":"block","x":271,"y":12},
+    {"t":"block","x":272,"y":12},
+    {"t":"block","x":273,"y":12},
+    {"t":"block","x":274,"y":12},
+    {"t":"block","x":275,"y":12},
+    {"t":"spike","x":276,"y":0},
+    {"t":"spike","x":276,"y":11,"rot":180},
+    {"t":"block","x":276,"y":12},
+    {"t":"block","x":277,"y":12},
+    {"t":"block","x":278,"y":12},
+    {"t":"block","x":279,"y":12},
+    {"t":"block","x":280,"y":12},
+    {"t":"spike","x":281,"y":0},
+    {"t":"spike","x":281,"y":11,"rot":180},
+    {"t":"block","x":281,"y":12},
+    {"t":"block","x":282,"y":12},
+    {"t":"block","x":283,"y":12},
+    {"t":"block","x":284,"y":12},
+    {"t":"block","x":285,"y":12},
+    {"t":"spike","x":286,"y":0},
+    {"t":"spike","x":286,"y":11,"rot":180},
+    {"t":"block","x":286,"y":12},
+    {"t":"block","x":287,"y":12},
+    {"t":"block","x":288,"y":12},
+    {"t":"block","x":289,"y":12},
+    {"t":"spike","x":290,"y":0},
+    {"t":"spike","x":290,"y":11,"rot":180},
+    {"t":"block","x":290,"y":12},
+    {"t":"block","x":291,"y":12},
+    {"t":"block","x":292,"y":12},
+    {"t":"block","x":293,"y":12},
+    {"t":"block","x":294,"y":12},
+    {"t":"block","x":295,"y":12},
+    {"t":"block","x":296,"y":12},
+    {"t":"block","x":297,"y":12},
+    {"t":"portal-dual","x":298,"y":0},
+    {"t":"speed-faster","x":305,"y":0},
+    {"t":"portal-ship","x":311,"y":0},
+    {"t":"block","x":314,"y":6},
+    {"t":"block","x":315,"y":6},
+    {"t":"block","x":316,"y":6},
+    {"t":"block","x":317,"y":6},
+    {"t":"block","x":318,"y":6},
+    {"t":"block","x":319,"y":6},
+    {"t":"block","x":320,"y":6},
+    {"t":"block","x":321,"y":6},
+    {"t":"block","x":322,"y":6},
+    {"t":"block","x":323,"y":6},
+    {"t":"block","x":324,"y":6},
+    {"t":"block","x":325,"y":6},
+    {"t":"block","x":326,"y":6},
+    {"t":"block","x":327,"y":0},
+    {"t":"block","x":327,"y":1},
+    {"t":"spike","x":327,"y":2},
+    {"t":"block","x":327,"y":6},
+    {"t":"block","x":328,"y":6},
+    {"t":"block","x":329,"y":6},
+    {"t":"block","x":330,"y":6},
+    {"t":"block","x":331,"y":6},
+    {"t":"block","x":332,"y":6},
+    {"t":"block","x":333,"y":6},
+    {"t":"block","x":334,"y":6},
+    {"t":"block","x":335,"y":6},
+    {"t":"block","x":336,"y":6},
+    {"t":"block","x":337,"y":6},
+    {"t":"spike","x":338,"y":2,"rot":180},
+    {"t":"block","x":338,"y":3},
+    {"t":"block","x":338,"y":4},
+    {"t":"block","x":338,"y":5},
+    {"t":"block","x":338,"y":6},
+    {"t":"block","x":339,"y":6},
+    {"t":"block","x":340,"y":6},
+    {"t":"block","x":341,"y":6},
+    {"t":"block","x":342,"y":6},
+    {"t":"block","x":343,"y":6},
+    {"t":"block","x":344,"y":6},
+    {"t":"block","x":345,"y":6},
+    {"t":"block","x":346,"y":6},
+    {"t":"block","x":347,"y":6},
+    {"t":"block","x":348,"y":6},
+    {"t":"block","x":349,"y":0},
+    {"t":"block","x":349,"y":1},
+    {"t":"spike","x":349,"y":2},
+    {"t":"coin","x":349,"y":4},
+    {"t":"block","x":349,"y":6},
+    {"t":"block","x":350,"y":6},
+    {"t":"block","x":351,"y":6},
+    {"t":"block","x":352,"y":6},
+    {"t":"block","x":353,"y":6},
+    {"t":"block","x":354,"y":6},
+    {"t":"block","x":355,"y":6},
+    {"t":"block","x":356,"y":6},
+    {"t":"block","x":357,"y":6},
+    {"t":"block","x":358,"y":6},
+    {"t":"block","x":359,"y":6},
+    {"t":"spike","x":360,"y":2,"rot":180},
+    {"t":"block","x":360,"y":3},
+    {"t":"block","x":360,"y":4},
+    {"t":"block","x":360,"y":5},
+    {"t":"block","x":360,"y":6},
+    {"t":"block","x":361,"y":6},
+    {"t":"block","x":362,"y":6},
+    {"t":"block","x":363,"y":6},
+    {"t":"block","x":364,"y":6},
+    {"t":"block","x":365,"y":6},
+    {"t":"block","x":366,"y":6},
+    {"t":"block","x":367,"y":6},
+    {"t":"block","x":368,"y":6},
+    {"t":"block","x":369,"y":6},
+    {"t":"block","x":370,"y":6},
+    {"t":"block","x":371,"y":0},
+    {"t":"block","x":371,"y":1},
+    {"t":"spike","x":371,"y":2},
+    {"t":"block","x":371,"y":6},
+    {"t":"block","x":372,"y":6},
+    {"t":"block","x":373,"y":6},
+    {"t":"block","x":374,"y":6},
+    {"t":"block","x":375,"y":6},
+    {"t":"block","x":376,"y":6},
+    {"t":"block","x":377,"y":6},
+    {"t":"block","x":378,"y":6},
+    {"t":"block","x":379,"y":6},
+    {"t":"block","x":380,"y":6},
+    {"t":"block","x":381,"y":6},
+    {"t":"spike","x":382,"y":2,"rot":180},
+    {"t":"block","x":382,"y":3},
+    {"t":"block","x":382,"y":4},
+    {"t":"block","x":382,"y":5},
+    {"t":"block","x":382,"y":6},
+    {"t":"block","x":383,"y":6},
+    {"t":"block","x":384,"y":6},
+    {"t":"block","x":385,"y":6},
+    {"t":"block","x":386,"y":6},
+    {"t":"block","x":387,"y":6},
+    {"t":"block","x":388,"y":6},
+    {"t":"block","x":389,"y":6},
+    {"t":"portal-cube","x":393,"y":0},
+    {"t":"speed-fast","x":399,"y":0},
+    {"t":"spike","x":409,"y":0},
+    {"t":"pad-red","x":418,"y":0},
+    {"t":"spike","x":419,"y":0},
+    {"t":"spike","x":420,"y":0},
+    {"t":"spike","x":421,"y":0},
+    {"t":"spike","x":422,"y":0},
+    {"t":"spike","x":423,"y":0},
+    {"t":"saw","x":433,"y":1},
+    {"t":"spike","x":443,"y":0},
+    {"t":"spike","x":444,"y":0},
+    {"t":"block","x":452,"y":0},
+    {"t":"block","x":453,"y":0},
+    {"t":"block","x":454,"y":0},
+    {"t":"block","x":455,"y":0},
+    {"t":"block","x":456,"y":0},
+    {"t":"spike-triple","x":462,"y":0},
+    {"t":"spike","x":474,"y":0},
+    {"t":"spike","x":481,"y":0},
+    {"t":"spike","x":482,"y":0},
+    {"t":"portal-robot","x":491,"y":0},
+    {"t":"block","x":501,"y":0},
+    {"t":"block","x":501,"y":1},
+    {"t":"block","x":502,"y":0},
+    {"t":"block","x":502,"y":1},
+    {"t":"block","x":503,"y":0},
+    {"t":"block","x":503,"y":1},
+    {"t":"block","x":504,"y":0},
+    {"t":"block","x":504,"y":1},
+    {"t":"block","x":505,"y":0},
+    {"t":"block","x":505,"y":1},
+    {"t":"spike","x":513,"y":0},
+    {"t":"spike","x":514,"y":0},
+    {"t":"block","x":522,"y":0},
+    {"t":"block","x":522,"y":1},
+    {"t":"block","x":523,"y":0},
+    {"t":"block","x":523,"y":1},
+    {"t":"block","x":524,"y":0},
+    {"t":"block","x":524,"y":1},
+    {"t":"block","x":525,"y":0},
+    {"t":"block","x":525,"y":1},
+    {"t":"block","x":526,"y":0},
+    {"t":"block","x":526,"y":1},
+    {"t":"spike-triple","x":535,"y":0},
+    {"t":"portal-cube","x":544,"y":0},
+    {"t":"pad-yellow","x":554,"y":0},
+    {"t":"spike","x":555,"y":0},
+    {"t":"spike","x":556,"y":0},
+    {"t":"spike","x":557,"y":0},
+    {"t":"spike","x":558,"y":0},
+    {"t":"saw","x":568,"y":0},
+    {"t":"spike","x":578,"y":0},
+    {"t":"spike","x":579,"y":0},
+    {"t":"spike","x":591,"y":0},
+    {"t":"orb-yellow","x":591,"y":2},
+    {"t":"spike","x":594,"y":0},
+    {"t":"orb-yellow","x":594,"y":4},
+    {"t":"spike","x":597,"y":0},
+    {"t":"spike","x":600,"y":0},
+    {"t":"spike","x":607,"y":0},
+    {"t":"spike-triple","x":614,"y":0},
+    {"t":"block","x":627,"y":0},
+    {"t":"block","x":628,"y":0},
+    {"t":"block","x":629,"y":0},
+    {"t":"block","x":630,"y":0},
+    {"t":"block","x":631,"y":0},
+    {"t":"spike","x":636,"y":0},
+    {"t":"spike","x":637,"y":0},
+    {"t":"spike","x":646,"y":0},
+    {"t":"portal-mirror","x":656,"y":0},
+    {"t":"spike","x":665,"y":0},
+    {"t":"spike","x":675,"y":0},
+    {"t":"spike","x":676,"y":0},
+    {"t":"block","x":685,"y":0},
+    {"t":"block","x":686,"y":0},
+    {"t":"block","x":687,"y":0},
+    {"t":"block","x":688,"y":0},
+    {"t":"block","x":689,"y":0},
+    {"t":"portal-mirror","x":697,"y":0},
+    {"t":"orb-dash","x":712,"y":2},
+    {"t":"spike","x":714,"y":0},
+    {"t":"spike","x":715,"y":0},
+    {"t":"spike","x":716,"y":0},
+    {"t":"spike","x":717,"y":0},
+    {"t":"spike","x":718,"y":0},
+    {"t":"spike","x":719,"y":0},
+    {"t":"spike","x":720,"y":0},
+    {"t":"spike","x":721,"y":0},
+    {"t":"spike","x":722,"y":0},
+    {"t":"spike","x":723,"y":0},
+    {"t":"spike","x":724,"y":0},
+    {"t":"spike","x":725,"y":0},
+    {"t":"spike","x":733,"y":0},
+    {"t":"spike","x":743,"y":0},
+    {"t":"spike","x":744,"y":0},
+    {"t":"finish","x":757,"y":0}
+  ]
+}
+];
+
+/* Parsed once at load. LEVEL_SRC keeps the authoring JSON around so the editor
+   can round-trip levels through the exact schema in assets/levels/. */
+var LEVELS = LEVEL_SRC.map(parseLevel);
+
+/* The offline level verifier in tools/ picks the core up through this hook. */
+if(typeof module !== "undefined" && module.exports){
+  module.exports = {
+    PHYS:PHYS, OBJ:OBJ, MODES:MODES, COLORS:COLORS,
+    LEVEL_SRC:LEVEL_SRC, LEVELS:LEVELS,
+    parseLevel:parseLevel, createSim:createSim, cloneSim:cloneSim,
+    simInput:simInput, stepSim:stepSim, entBox:entBox, impulseFor:impulseFor
+  };
+}
+/*==CORE_END==*/
+
+/* ==========================================================================
+   Assets. Sprites are optional: every one of them has a procedural stand-in
+   drawn from the palette, so deleting assets/ entirely leaves the game fully
+   playable. SVGs are rasterised once into an offscreen canvas because
+   drawImage() on an SVG re-rasterises on every call and wrecks the frame time.
+   ========================================================================== */
+
+var SPRITE_PATHS = (function(){
+  var p = {}, i;
+  var obstacles = ["spike","spike-mini","spike-triple","block","block-half","slope","saw","ground-tile"];
+  var inter     = ["pad-yellow","pad-pink","pad-blue","pad-red",
+                   "orb-yellow","orb-pink","orb-blue","orb-green","orb-red","orb-dash","coin"];
+  var portals   = ["portal-cube","portal-ship","portal-ball","portal-ufo","portal-wave","portal-robot",
+                   "portal-gravity-up","portal-gravity-down","portal-mini","portal-big",
+                   "portal-dual","portal-mirror","speed-slow","speed-normal","speed-fast","speed-faster"];
+  var players   = ["cube","cube-mini","ship","ball","ufo","wave","robot"];
+  var fx        = ["explosion","particle-spark","particle-square","trail"];
+  var ui        = ["logo","icon-play","icon-pause","icon-restart","icon-practice","progress-bar"];
+  for(i=0;i<obstacles.length;i++) p[obstacles[i]] = "assets/sprites/obstacles/"+obstacles[i]+".svg";
+  for(i=0;i<inter.length;i++)     p[inter[i]]     = "assets/sprites/interactive/"+inter[i]+".svg";
+  for(i=0;i<portals.length;i++)   p[portals[i]]   = "assets/sprites/portals/"+portals[i]+".svg";
+  for(i=0;i<players.length;i++)   p["p-"+players[i]] = "assets/sprites/player/"+players[i]+".svg";
+  for(i=0;i<fx.length;i++)        p["fx-"+fx[i]]  = "assets/sprites/fx/"+fx[i]+".svg";
+  for(i=0;i<ui.length;i++)        p["ui-"+ui[i]]  = "assets/ui/"+ui[i]+".svg";
+  p["bg-grid"]   = "assets/backgrounds/bg-grid.svg";
+  p["bg-sunset"] = "assets/backgrounds/bg-sunset.svg";
+  return p;
+})();
+
+var Assets = {
+  slots: {},
+  pending: 0,
+  ready: false,
+
+  init: function(){
+    var self = this;
+    for(var key in SPRITE_PATHS){
+      (function(k, src){
+        var slot = { ok:false, img:null, ras:null, rasScale:0, w:0, h:0 };
+        self.slots[k] = slot;
+        var im = new Image();
+        self.pending++;
+        im.onload = function(){
+          slot.ok = im.naturalWidth > 0;
+          slot.img = im; slot.w = im.naturalWidth || 30; slot.h = im.naturalHeight || 30;
+          if(--self.pending === 0) self.ready = true;
+        };
+        im.onerror = function(){ slot.ok = false; if(--self.pending === 0) self.ready = true; };
+        im.src = src;
+      })(key, SPRITE_PATHS[key]);
+    }
+    if(this.pending === 0) this.ready = true;
+  },
+
+  /* Returns a canvas rasterised near the size it will be drawn at, or null when
+     the sprite is missing and the caller should fall back to drawing shapes. */
+  get: function(key, targetW){
+    var s = this.slots[key];
+    if(!s || !s.ok || !s.img) return null;
+    var want = clamp((targetW || s.w) / s.w, 0.5, 3);
+    if(!s.ras || Math.abs(want - s.rasScale) / s.rasScale > 0.3){
+      var c = document.createElement("canvas");
+      c.width  = Math.max(2, Math.ceil(s.w * want));
+      c.height = Math.max(2, Math.ceil(s.h * want));
+      var g = c.getContext("2d");
+      try { g.drawImage(s.img, 0, 0, c.width, c.height); }
+      catch(err){ s.ok = false; return null; }
+      s.ras = c; s.rasScale = want;
+    }
+    return s.ras;
+  }
+};
+
+/* Procedural sprites are rasterised once per size bucket, exactly like the
+   SVGs. Drawing them live costs a fresh gradient per object per frame, which
+   is the difference between 34 and 60 fps when assets/ is missing. Anything
+   that used to animate inside the shape is now done by the caller instead. */
+var ProcCache = {
+  map: {},
+  get: function(key, w, h){
+    var bucket = Math.max(8, Math.round(w/4)*4);
+    var id = key + "@" + bucket;
+    var c = this.map[id];
+    if(!c){
+      var k = bucket/Math.max(1,w);
+      c = document.createElement("canvas");
+      c.width  = Math.max(2, Math.ceil(bucket));
+      c.height = Math.max(2, Math.ceil(h*k));
+      procSprite(c.getContext("2d"), key, c.width, c.height);
+      this.map[id] = c;
+    }
+    return c;
+  },
+  player: {},
+  getPlayer: function(mode, w, h, colA, colB){
+    var bucket = Math.max(8, Math.round(w/4)*4);
+    var id = mode + "@" + bucket;
+    var c = this.player[id];
+    if(!c){
+      var k = bucket/Math.max(1,w);
+      c = document.createElement("canvas");
+      c.width  = Math.max(2, Math.ceil(bucket));
+      c.height = Math.max(2, Math.ceil(h*k));
+      procPlayer(c.getContext("2d"), mode, c.width, c.height, colA, colB);
+      this.player[id] = c;
+    }
+    return c;
+  }
+};
+
+/* --------------------------------------------------------------------------
+   Procedural stand-ins. Each one draws into the box (0,0)-(w,h) that the
+   caller has already positioned and rotated, with screen-style y pointing
+   down. They are deliberately the same silhouettes as the SVGs, so a missing
+   asset changes the finish but never the readability of an obstacle.
+   -------------------------------------------------------------------------- */
+function procSprite(g, key, w, h){
+  var C = COLORS;
+  switch(key){
+
+    case "spike": case "spike-mini": case "spike-triple": {
+      var n = (key === "spike-triple") ? 3 : 1, cw = w/n;
+      for(var i=0;i<n;i++){
+        var x0 = i*cw;
+        g.beginPath();
+        g.moveTo(x0+cw*0.06, h); g.lineTo(x0+cw*0.5, 0); g.lineTo(x0+cw*0.94, h);
+        g.closePath();
+        var grd = g.createLinearGradient(0, 0, 0, h);
+        grd.addColorStop(0, "#ff8fa8"); grd.addColorStop(1, C.magenta);
+        g.fillStyle = grd; g.fill();
+        g.strokeStyle = "rgba(255,255,255,.65)"; g.lineWidth = Math.max(1, w*0.035); g.stroke();
+      }
+      break;
+    }
+
+    case "block": case "block-half": {
+      var r = Math.min(w,h)*0.14;
+      roundRect(g, 1, 1, w-2, h-2, r);
+      var bg = g.createLinearGradient(0,0,0,h);
+      bg.addColorStop(0, "#38207a"); bg.addColorStop(1, C.deep);
+      g.fillStyle = bg; g.fill();
+      g.strokeStyle = C.cyan; g.lineWidth = Math.max(1.2, w*0.055); g.stroke();
+      g.globalAlpha = 0.5;
+      roundRect(g, w*0.26, h*0.26, w*0.48, h*0.48, r*0.7);
+      g.strokeStyle = "rgba(45,226,230,.75)"; g.lineWidth = Math.max(1, w*0.03); g.stroke();
+      g.globalAlpha = 1;
+      break;
+    }
+
+    case "slope": {
+      g.beginPath(); g.moveTo(0,h); g.lineTo(w,0); g.lineTo(w,h); g.closePath();
+      var sg = g.createLinearGradient(0,h,w,0);
+      sg.addColorStop(0, C.deep); sg.addColorStop(1, "#38207a");
+      g.fillStyle = sg; g.fill();
+      g.strokeStyle = C.cyan; g.lineWidth = Math.max(1.2, w*0.05); g.stroke();
+      break;
+    }
+
+    case "ground-tile": {
+      g.fillStyle = C.deep; g.fillRect(0,0,w,h);
+      g.strokeStyle = "rgba(45,226,230,.25)"; g.lineWidth = 1;
+      g.strokeRect(0.5,0.5,w-1,h-1);
+      break;
+    }
+
+    case "saw": {
+      var cx=w/2, cy=h/2, R=Math.min(w,h)*0.46, teeth=10;
+      g.beginPath();
+      for(var s=0;s<teeth*2;s++){
+        var ang = (s/(teeth*2))*Math.PI*2;
+        var rr = (s%2===0) ? R : R*0.74;
+        g[s?"lineTo":"moveTo"](cx+Math.cos(ang)*rr, cy+Math.sin(ang)*rr);
+      }
+      g.closePath();
+      g.fillStyle = "#b9c6e8"; g.fill();
+      g.strokeStyle = C.magenta; g.lineWidth = Math.max(1.2, w*0.04); g.stroke();
+      g.beginPath(); g.arc(cx,cy,R*0.33,0,6.2832);
+      g.fillStyle = C.void; g.fill();
+      g.strokeStyle = C.magenta; g.stroke();
+      break;
+    }
+
+    case "pad-yellow": case "pad-pink": case "pad-blue": case "pad-red": {
+      var pc = key==="pad-yellow"?C.gold : key==="pad-pink"?"#ff7ad9" : key==="pad-blue"?C.cyan : C.magenta;
+      roundRect(g, w*0.04, h*0.18, w*0.92, h*0.74, h*0.35);
+      g.fillStyle = pc; g.fill();
+      g.globalAlpha = 0.45;
+      roundRect(g, w*0.16, h*0.02, w*0.68, h*0.5, h*0.3);
+      g.fillStyle = "#fff"; g.fill();
+      g.globalAlpha = 1;
+      break;
+    }
+
+    case "orb-yellow": case "orb-pink": case "orb-blue":
+    case "orb-green": case "orb-red": case "orb-dash": {
+      var oc = key==="orb-yellow"?C.gold : key==="orb-pink"?"#ff7ad9" :
+               key==="orb-blue"?C.cyan : key==="orb-green"?C.lime :
+               key==="orb-red"?C.magenta : C.violet;
+      var ocx=w/2, ocy=h/2, orr=w*0.34;
+      g.beginPath(); g.arc(ocx,ocy,orr*1.42,0,6.2832);
+      g.fillStyle = oc; g.globalAlpha = 0.18; g.fill(); g.globalAlpha = 1;
+      g.beginPath(); g.arc(ocx,ocy,orr,0,6.2832);
+      g.strokeStyle = oc; g.lineWidth = Math.max(1.5, w*0.09); g.stroke();
+      g.beginPath(); g.arc(ocx,ocy,orr*0.42,0,6.2832);
+      g.fillStyle = "#fff"; g.globalAlpha = 0.9; g.fill(); g.globalAlpha = 1;
+      break;
+    }
+
+    case "coin": {
+      var ccx=w/2, ccy=h/2, cr=w*0.36;
+      g.beginPath(); g.arc(ccx,ccy,cr,0,6.2832);
+      var cg = g.createRadialGradient(ccx-cr*0.3, ccy-cr*0.3, cr*0.1, ccx, ccy, cr);
+      cg.addColorStop(0,"#fff6c0"); cg.addColorStop(1,C.gold);
+      g.fillStyle = cg; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1, w*0.045); g.stroke();
+      g.beginPath(); g.arc(ccx,ccy,cr*0.55,0,6.2832);
+      g.strokeStyle = "rgba(255,255,255,.7)"; g.stroke();
+      break;
+    }
+
+    default: {
+      if(key.indexOf("portal-") === 0){
+        var col = PORTAL_TINT[key] || C.violet;
+        g.save();
+        roundRect(g, w*0.12, h*0.02, w*0.76, h*0.96, w*0.38);
+        g.strokeStyle = col; g.lineWidth = Math.max(2, w*0.13); g.stroke();
+        g.globalAlpha = 0.20;
+        g.fillStyle = col; g.fill();
+        g.restore();
+      } else if(key.indexOf("speed-") === 0){
+        var arrows = {"speed-slow":1,"speed-normal":2,"speed-fast":3,"speed-faster":4,"speed-fastest":5}[key]||2;
+        g.strokeStyle = C.lime; g.lineWidth = Math.max(1.4, w*0.07); g.lineCap="round";
+        for(var a=0;a<arrows;a++){
+          var ax = w*0.18 + a*(w*0.64/Math.max(1,arrows-1||1));
+          g.beginPath(); g.moveTo(ax-w*0.1, h*0.3); g.lineTo(ax+w*0.06, h*0.5); g.lineTo(ax-w*0.1, h*0.7);
+          g.stroke();
+        }
+      }
+    }
+  }
+}
+
+var PORTAL_TINT = {
+  "portal-cube":"#2DE2E6", "portal-ship":"#FF3864", "portal-ball":"#F9C80E",
+  "portal-ufo":"#7CFF6B",  "portal-wave":"#9D4EDD", "portal-robot":"#ff9d4e",
+  "portal-gravity-up":"#7CFF6B", "portal-gravity-down":"#2DE2E6",
+  "portal-mini":"#F9C80E", "portal-big":"#F9C80E",
+  "portal-dual":"#FF3864", "portal-mirror":"#9D4EDD"
+};
+
+/* Player silhouettes, drawn centred in a (0,0)-(w,h) box. */
+function procPlayer(g, mode, w, h, colA, colB){
+  var r = Math.min(w,h);
+  switch(mode){
+    case "cube": case "robot":
+      roundRect(g, 0, 0, w, h, r*0.18);
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.5, r*0.07); g.stroke();
+      roundRect(g, w*0.24, h*0.24, w*0.52, h*0.52, r*0.12);
+      g.fillStyle = colB; g.fill();
+      if(mode === "robot"){
+        g.fillStyle = colB;
+        g.fillRect(w*0.12, h*0.86, w*0.2, h*0.14);
+        g.fillRect(w*0.68, h*0.86, w*0.2, h*0.14);
+      }
+      break;
+    case "ball":
+      g.beginPath(); g.arc(w/2, h/2, r*0.48, 0, 6.2832);
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.5, r*0.07); g.stroke();
+      g.beginPath(); g.moveTo(w*0.5, h*0.08); g.lineTo(w*0.5, h*0.92);
+      g.strokeStyle = colB; g.lineWidth = Math.max(1.5, r*0.12); g.stroke();
+      break;
+    case "ship":
+      g.beginPath();
+      g.moveTo(0, h*0.72); g.lineTo(w*0.62, h*0.2); g.lineTo(w, h*0.44);
+      g.lineTo(w*0.72, h*0.92); g.lineTo(w*0.1, h*0.95);
+      g.closePath();
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.4, r*0.06); g.stroke();
+      roundRect(g, w*0.3, h*0.34, w*0.34, h*0.34, r*0.14);
+      g.fillStyle = colB; g.fill();
+      break;
+    case "ufo":
+      g.beginPath(); g.ellipse(w/2, h*0.62, w*0.48, h*0.26, 0, 0, 6.2832);
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.4, r*0.07); g.stroke();
+      g.beginPath(); g.arc(w/2, h*0.5, w*0.24, Math.PI, 0);
+      g.fillStyle = colB; g.fill(); g.stroke();
+      break;
+    case "wave":
+      g.beginPath();
+      g.moveTo(w*0.5, 0); g.lineTo(w, h*0.5); g.lineTo(w*0.5, h); g.lineTo(0, h*0.5);
+      g.closePath();
+      g.fillStyle = colA; g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = Math.max(1.4, r*0.08); g.stroke();
+      break;
+  }
+}
+
+function roundRect(g, x, y, w, h, r){
+  r = Math.min(r, w/2, h/2);
+  g.beginPath();
+  g.moveTo(x+r, y);
+  g.arcTo(x+w, y,   x+w, y+h, r);
+  g.arcTo(x+w, y+h, x,   y+h, r);
+  g.arcTo(x,   y+h, x,   y,   r);
+  g.arcTo(x,   y,   x+w, y,   r);
+  g.closePath();
+}
+
+/* ==========================================================================
+   Input. Space / Up / W / left click / touch are all the same button. The
+   press edge is latched rather than sampled, so a tap that lands between two
+   render frames still reaches the physics.
+   ========================================================================== */
+
+var Input = {
+  down: false,
+  pressLatch: false,        // consumed by the first physics substep after a press
+  keys: {},
+  pointer: { x:0, y:0, down:false, clicked:false },
+  // Only jump is rebindable. Esc/R/P/Z/X/H are fixed and read directly.
+  binds: { jump:["Space","ArrowUp","KeyW"] },
+  onKey: null,              // scene-level hook, currently unused by the shipped scenes
+
+  init: function(canvas){
+    var self = this;
+
+    function isJump(code){ return self.binds.jump.indexOf(code) >= 0; }
+
+    addEventListener("keydown", function(ev){
+      if(ev.repeat){ if(isJump(ev.code)) ev.preventDefault(); return; }
+      self.keys[ev.code] = true;
+      if(isJump(ev.code)){ self.press(); ev.preventDefault(); }
+      if(ev.code === "Space" || ev.code === "ArrowUp" || ev.code === "ArrowDown") ev.preventDefault();
+      if(self.onKey) self.onKey(ev.code, ev);
+    });
+    addEventListener("keyup", function(ev){
+      self.keys[ev.code] = false;
+      if(isJump(ev.code)) self.release();
+    });
+    addEventListener("blur", function(){ self.keys = {}; self.release(); });
+
+    function pos(ev){
+      var r = canvas.getBoundingClientRect();
+      self.pointer.x = (ev.clientX - r.left) * (canvas.width / r.width);
+      self.pointer.y = (ev.clientY - r.top)  * (canvas.height / r.height);
+    }
+    canvas.addEventListener("mousedown", function(ev){
+      if(ev.button !== 0) return;
+      pos(ev); self.pointer.down = true; self.pointer.clicked = true; self.press();
+    });
+    addEventListener("mouseup", function(ev){ self.pointer.down = false; self.release(); });
+    canvas.addEventListener("mousemove", pos);
+
+    // Multi-touch: the button is down while any finger is on the screen.
+    var touches = 0;
+    canvas.addEventListener("touchstart", function(ev){
+      ev.preventDefault();
+      touches = ev.touches.length;
+      if(ev.changedTouches[0]) pos(ev.changedTouches[0]);
+      self.pointer.down = true; self.pointer.clicked = true; self.press();
+    }, {passive:false});
+    canvas.addEventListener("touchend", function(ev){
+      ev.preventDefault();
+      touches = ev.touches.length;
+      if(touches === 0){ self.pointer.down = false; self.release(); }
+    }, {passive:false});
+    canvas.addEventListener("touchmove", function(ev){ ev.preventDefault(); }, {passive:false});
+    canvas.addEventListener("contextmenu", function(ev){ ev.preventDefault(); });
+  },
+
+  /* Rebuilds the jump binding from the saved setting. W and Up stay available
+     alongside the chosen key, and mouse/touch are never rebindable, so no
+     choice here can lock the player out of jumping. */
+  applyBinds: function(){
+    var k = (Save.data && Save.data.settings.jumpKey) || "Space";
+    var list = [k];
+    if(list.indexOf("ArrowUp") < 0) list.push("ArrowUp");
+    if(list.indexOf("KeyW") < 0) list.push("KeyW");
+    this.binds.jump = list;
+  },
+
+  press: function(){ if(!this.down){ this.down = true; this.pressLatch = true; } },
+  release: function(){ this.down = false; },
+
+  /* True exactly once per press, on the first physics substep that asks. */
+  takePress: function(){ var p = this.pressLatch; this.pressLatch = false; return p; },
+
+  /* True once per click, for menu buttons. */
+  takeClick: function(){ var c = this.pointer.clicked; this.pointer.clicked = false; return c; },
+
+  key: function(code){ return !!this.keys[code]; }
+};
+
+/* ==========================================================================
+   Save. localStorage can throw in private windows and under some file://
+   policies, so every access is guarded and the game falls back to a
+   memory-only record that simply does not survive a reload.
+   ========================================================================== */
+
+var Save = {
+  KEY: "neon-dash-save-v1",
+  data: null,
+  persistent: true,
+
+  defaults: function(){
+    return {
+      levels: {},              // id -> {best, completed, practiceBest, coins:[0,0,0], attempts}
+      totalAttempts: 0,
+      settings: {
+        music: 0.7, sfx: 0.8, particles: 1, showHitboxes: false, jumpKey: "Space",
+        highContrast: false, reducedMotion: false, autoRetry: true
+      }
+    };
+  },
+
+  load: function(){
+    var d = null;
+    try {
+      var raw = localStorage.getItem(this.KEY);
+      if(raw) d = JSON.parse(raw);
+    } catch(e){ this.persistent = false; }
+    this.data = d && d.levels ? d : this.defaults();
+    var def = this.defaults().settings;
+    for(var k in def) if(this.data.settings[k] === undefined) this.data.settings[k] = def[k];
+    return this.data;
+  },
+
+  flush: function(){
+    if(!this.persistent) return;
+    try { localStorage.setItem(this.KEY, JSON.stringify(this.data)); }
+    catch(e){ this.persistent = false; }
+  },
+
+  level: function(id){
+    var L = this.data.levels[id];
+    if(!L){
+      L = { best:0, completed:false, practiceBest:0, coins:[0,0,0], attempts:0 };
+      this.data.levels[id] = L;
+    }
+    if(!L.coins) L.coins = [0,0,0];
+    return L;
+  }
+};
+
+/* ==========================================================================
+   Audio. Two things matter here.
+
+   1. The game clock runs off audioContext.currentTime whenever the context
+      exists, so obstacles stay welded to the music instead of drifting with
+      the display refresh rate.
+   2. assets/audio/ ships empty, so the soundtrack is synthesised at the
+      level's own BPM from oscillators. If a real mp3 is dropped in later it is
+      used instead, and if WebAudio is unavailable the game is simply silent.
+   ========================================================================== */
+
+var Sound = {
+  ctx: null, master: null, musicGain: null, sfxGain: null,
+  analyser: null, freq: null, noise: null,
+  bass: 0, level: null, bpm: 120,
+  buffer: null, source: null, startedAt: 0, playing: false,
+  nextBeat: 0, beatIndex: 0, synth: true, failed: false,
+
+  init: function(){
+    if(this.ctx || this.failed) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC){ this.failed = true; return; }
+    try {
+      this.ctx = new AC();
+      this.master   = this.ctx.createGain();
+      this.musicGain = this.ctx.createGain();
+      this.sfxGain   = this.ctx.createGain();
+      this.analyser  = this.ctx.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.72;
+      this.freq = new Uint8Array(this.analyser.frequencyBinCount);
+
+      this.musicGain.connect(this.master);
+      this.sfxGain.connect(this.master);
+      this.master.connect(this.analyser);
+      this.analyser.connect(this.ctx.destination);
+      this.applyVolumes();
+
+      // One second of noise, reused by hats and the death burst.
+      var n = this.ctx.sampleRate | 0;
+      this.noise = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+      var d = this.noise.getChannelData(0);
+      for(var i=0;i<n;i++) d[i] = Math.random()*2-1;
+    } catch(e){ this.failed = true; this.ctx = null; }
+  },
+
+  resume: function(){
+    if(this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+  },
+
+  applyVolumes: function(){
+    if(!this.ctx) return;
+    var s = Save.data.settings;
+    this.musicGain.gain.value = s.music;
+    this.sfxGain.gain.value   = s.sfx;
+    this.master.gain.value    = 0.9;
+  },
+
+  /* Clock the game from the audio hardware when we can. */
+  clock: function(){
+    return this.ctx ? this.ctx.currentTime : performance.now()/1000;
+  },
+
+  setLevel: function(level){
+    this.level = level;
+    this.bpm = level.meta.bpm || 120;
+    this.buffer = null;
+    this.synth = true;
+    var self = this, url = level.meta.music;
+    if(!url || !this.ctx || typeof fetch !== "function") return;
+    // file:// blocks fetch in most browsers; that is expected, not an error.
+    fetch(url).then(function(r){
+      if(!r.ok) throw 0;
+      return r.arrayBuffer();
+    }).then(function(ab){
+      return self.ctx.decodeAudioData(ab);
+    }).then(function(buf){
+      self.buffer = buf; self.synth = false;
+    }).catch(function(){ /* stay on the synthesised track */ });
+  },
+
+  /* `offset` lets a practice checkpoint resume the track where it left off. */
+  start: function(offset){
+    if(!this.ctx) return;
+    offset = offset || 0;
+    this.resume();
+    this.stop();
+    var spb16 = (60/this.bpm)/4;
+    this.startedAt = this.ctx.currentTime + 0.05;
+    this.beatIndex = Math.floor(offset/spb16);
+    this.nextBeat  = this.startedAt;
+    this.playing   = true;
+    if(this.buffer){
+      var s = this.ctx.createBufferSource();
+      s.buffer = this.buffer; s.loop = true;
+      s.connect(this.musicGain);
+      s.start(this.startedAt, offset + (this.level.meta.musicOffsetMs||0)/1000);
+      this.source = s;
+    }
+  },
+
+  stop: function(){
+    this.playing = false;
+    if(this.source){ try{ this.source.stop(); }catch(e){} this.source = null; }
+  },
+
+  /* Schedules the synthesised track a little ahead of the playhead and reads
+     the analyser for the background pulse. Called once per rendered frame. */
+  update: function(){
+    if(!this.ctx) return;
+    if(this.analyser){
+      this.analyser.getByteFrequencyData(this.freq);
+      var sum = 0;
+      for(var i=1;i<7;i++) sum += this.freq[i];
+      var v = sum/(6*255);
+      this.bass += (v - this.bass) * 0.25;
+    }
+    if(!this.playing || !this.synth) return;
+
+    var spb = 60/this.bpm, ahead = this.ctx.currentTime + 0.25;
+    while(this.nextBeat < ahead && this.beatIndex < 100000){
+      this.synthBeat(this.nextBeat, this.beatIndex);
+      this.beatIndex++;
+      this.nextBeat += spb/4;                // scheduled in sixteenths
+    }
+  },
+
+  /* A four-on-the-floor sketch: kick, hat, a bass line that walks a minor
+     progression, and a sparse arp. Enough to give the level a pulse. */
+  synthBeat: function(t, i){
+    var s16 = i % 16, bar = (i/16)|0;
+    var roots = [0, 0, 5, 3];
+    var root  = 55 * Math.pow(2, (roots[bar % roots.length]) / 12);   // around A1
+
+    if(s16 % 4 === 0) this.kick(t);
+    if(s16 % 2 === 1) this.hat(t, 0.045);
+    if(s16 % 4 === 0 || s16 === 6 || s16 === 11) this.bassNote(t, root*2, 0.16);
+    if(s16 % 2 === 0){
+      var scale = [0,3,5,7,10,12];
+      var n = scale[(i*5 + bar*3) % scale.length];
+      this.arp(t, root*4*Math.pow(2, n/12), 0.1);
+    }
+  },
+
+  env: function(node, t, peak, attack, decay){
+    var g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t+attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+attack+decay);
+    node.connect(g);
+    return g;
+  },
+
+  kick: function(t){
+    var o = this.ctx.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(42, t+0.11);
+    var g = this.env(o, t, 0.9, 0.004, 0.16);
+    g.connect(this.musicGain);
+    o.start(t); o.stop(t+0.2);
+  },
+
+  hat: function(t, dur){
+    var s = this.ctx.createBufferSource(); s.buffer = this.noise;
+    var f = this.ctx.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 7200;
+    s.connect(f);
+    var g = this.env(f, t, 0.12, 0.002, dur);
+    g.connect(this.musicGain);
+    s.start(t); s.stop(t+dur+0.02);
+  },
+
+  bassNote: function(t, hz, dur){
+    var o = this.ctx.createOscillator();
+    o.type = "sawtooth"; o.frequency.value = hz;
+    var f = this.ctx.createBiquadFilter();
+    f.type = "lowpass"; f.frequency.setValueAtTime(900, t);
+    f.frequency.exponentialRampToValueAtTime(240, t+dur);
+    o.connect(f);
+    var g = this.env(f, t, 0.30, 0.008, dur);
+    g.connect(this.musicGain);
+    o.start(t); o.stop(t+dur+0.05);
+  },
+
+  arp: function(t, hz, dur){
+    var o = this.ctx.createOscillator();
+    o.type = "square"; o.frequency.value = hz;
+    var g = this.env(o, t, 0.055, 0.005, dur);
+    g.connect(this.musicGain);
+    o.start(t); o.stop(t+dur+0.03);
+  },
+
+  /* ---- one-shot effects, all synthesised ------------------------------- */
+  sfx: function(name){
+    if(!this.ctx || Save.data.settings.sfx <= 0) return;
+    this.resume();
+    var t = this.ctx.currentTime, o, g, f, s;
+    switch(name){
+      case "death":
+        s = this.ctx.createBufferSource(); s.buffer = this.noise;
+        f = this.ctx.createBiquadFilter(); f.type = "lowpass";
+        f.frequency.setValueAtTime(4200, t);
+        f.frequency.exponentialRampToValueAtTime(180, t+0.32);
+        s.connect(f);
+        g = this.env(f, t, 0.55, 0.004, 0.33); g.connect(this.sfxGain);
+        s.start(t); s.stop(t+0.4);
+        o = this.ctx.createOscillator(); o.type = "sawtooth";
+        o.frequency.setValueAtTime(220, t);
+        o.frequency.exponentialRampToValueAtTime(48, t+0.3);
+        g = this.env(o, t, 0.34, 0.004, 0.3); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.36);
+        break;
+      case "orb": case "pad":
+        o = this.ctx.createOscillator(); o.type = "triangle";
+        o.frequency.setValueAtTime(name==="orb"?620:480, t);
+        o.frequency.exponentialRampToValueAtTime(name==="orb"?1180:900, t+0.09);
+        g = this.env(o, t, 0.3, 0.004, 0.11); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.16);
+        break;
+      case "coin":
+        [880, 1320].forEach(function(hz, k){
+          var oo = Sound.ctx.createOscillator(); oo.type = "sine"; oo.frequency.value = hz;
+          var gg = Sound.env(oo, t+k*0.07, 0.34, 0.004, 0.16); gg.connect(Sound.sfxGain);
+          oo.start(t+k*0.07); oo.stop(t+k*0.07+0.22);
+        });
+        break;
+      case "portal":
+        o = this.ctx.createOscillator(); o.type = "sawtooth";
+        o.frequency.setValueAtTime(180, t);
+        o.frequency.exponentialRampToValueAtTime(1500, t+0.22);
+        f = this.ctx.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 6;
+        f.frequency.setValueAtTime(400, t);
+        f.frequency.exponentialRampToValueAtTime(2600, t+0.22);
+        o.connect(f);
+        g = this.env(f, t, 0.3, 0.01, 0.24); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.3);
+        break;
+      case "win":
+        [523, 659, 784, 1047].forEach(function(hz, k){
+          var oo = Sound.ctx.createOscillator(); oo.type = "triangle"; oo.frequency.value = hz;
+          var gg = Sound.env(oo, t+k*0.09, 0.32, 0.006, 0.3); gg.connect(Sound.sfxGain);
+          oo.start(t+k*0.09); oo.stop(t+k*0.09+0.4);
+        });
+        break;
+      case "click":
+        o = this.ctx.createOscillator(); o.type = "square"; o.frequency.value = 880;
+        g = this.env(o, t, 0.12, 0.002, 0.05); g.connect(this.sfxGain);
+        o.start(t); o.stop(t+0.08);
+        break;
+    }
+  }
+};
+
+/* ==========================================================================
+   Particles. A fixed pool that is allocated once and then only ever mutated,
+   so a hundred deaths in a row cost nothing in garbage collection.
+   ========================================================================== */
+
+var Particles = {
+  pool: [], n: 0, cursor: 0,
+
+  init: function(max){
+    this.n = max || 700;
+    this.pool.length = 0;
+    for(var i=0;i<this.n;i++){
+      this.pool.push({ live:false, x:0,y:0, vx:0,vy:0, life:0, max:1,
+                       size:4, col:"#fff", kind:0, rot:0, spin:0, drag:0.98, grav:0 });
+    }
+  },
+
+  spawn: function(x,y,vx,vy,life,size,col,kind,grav){
+    var p = this.pool[this.cursor];
+    this.cursor = (this.cursor+1) % this.n;
+    p.live = true; p.x = x; p.y = y; p.vx = vx; p.vy = vy;
+    p.life = life; p.max = life; p.size = size; p.col = col;
+    p.kind = kind||0; p.rot = Math.random()*6.28; p.spin = (Math.random()-0.5)*12;
+    p.grav = grav === undefined ? -900 : grav;
+    p.drag = 0.985;
+    return p;
+  },
+
+  burst: function(x,y,col,count,power){
+    var amt = Math.round(count * Save.data.settings.particles);
+    for(var i=0;i<amt;i++){
+      var a = Math.random()*6.2832, s = power*(0.25+Math.random()*0.95);
+      this.spawn(x, y, Math.cos(a)*s, Math.sin(a)*s,
+                 0.4+Math.random()*0.55, 3+Math.random()*7, col, i%3===0?1:0);
+    }
+  },
+
+  trail: function(x,y,col,vx){
+    if(Save.data.settings.particles <= 0) return;
+    this.spawn(x, y, -vx*0.12+(Math.random()-0.5)*40, (Math.random()-0.5)*50,
+               0.3+Math.random()*0.25, 3+Math.random()*4, col, 0, -140);
+  },
+
+  update: function(dt){
+    for(var i=0;i<this.n;i++){
+      var p = this.pool[i];
+      if(!p.live) continue;
+      p.life -= dt;
+      if(p.life <= 0){ p.live = false; continue; }
+      p.vy += p.grav*dt;
+      p.vx *= p.drag; p.vy *= p.drag;
+      p.x += p.vx*dt; p.y += p.vy*dt;
+      p.rot += p.spin*dt;
+    }
+  },
+
+  clear: function(){ for(var i=0;i<this.n;i++) this.pool[i].live = false; },
+
+  draw: function(g, view){
+    var s = view.scale, H = view.h;
+    for(var i=0;i<this.n;i++){
+      var p = this.pool[i];
+      if(!p.live) continue;
+      var a = p.life/p.max;
+      var sx = (p.x - view.camX)*s, sy = H - (p.y - view.camY)*s;
+      if(sx < -40 || sx > view.w+40) continue;
+      g.globalAlpha = a*a;
+      g.fillStyle = p.col;
+      var sz = p.size*s*(0.35+a*0.65);
+      if(p.kind === 1){
+        g.save(); g.translate(sx,sy); g.rotate(p.rot);
+        g.fillRect(-sz/2,-sz/2,sz,sz);
+        g.restore();
+      } else {
+        g.beginPath(); g.arc(sx, sy, sz/2, 0, 6.2832); g.fill();
+      }
+    }
+    g.globalAlpha = 1;
+  }
+};
+
+/* ==========================================================================
+   Renderer. Layers, in order: background parallax, ground and roof, world
+   objects, the player, particles, HUD. Everything is drawn in screen space
+   through toX/toY rather than a canvas transform, so text and images stay
+   the right way up while the world keeps y pointing sensibly upward.
+
+   shadowBlur is expensive, so it is spent only on orbs, portals, coins and
+   the player - never on the hundreds of blocks in a corridor.
+   ========================================================================== */
+
+var View = { scale:1, camX:0, camY:0, w:0, h:0, viewW:0, viewH:0, smoothY:null, shakeX:0, shakeY:0 };
+
+function toX(v, wx){ return (wx - v.camX)*v.scale + v.shakeX; }
+function toY(v, wy){ return v.h - (wy - v.camY)*v.scale + v.shakeY; }
+
+function computeView(cv, sim, dt){
+  var W = cv.width, H = cv.height;
+  var scale = Math.max(H/(15.5*PHYS.UNIT), W/(30*PHYS.UNIT));
+  var viewW = W/scale, viewH = H/scale;
+  var e = sim ? sim.ents[0] : null;
+
+  var bot = -2*PHYS.UNIT, top = (PHYS.CEIL_BLOCKS+2)*PHYS.UNIT;
+  var wantY;
+  if(viewH >= top-bot) wantY = bot - (viewH-(top-bot))/2;
+  else wantY = clamp((e?e.y:0) - viewH*0.45, bot, top-viewH);
+
+  if(View.smoothY === null || dt === 0) View.smoothY = wantY;
+  else View.smoothY += (wantY - View.smoothY)*Math.min(1, dt*6);
+
+  View.scale = scale; View.w = W; View.h = H;
+  View.viewW = viewW; View.viewH = viewH;
+  View.camX = (e ? e.x : 0) - viewW*0.28;
+  View.camY = View.smoothY;
+  return View;
+}
+
+/* ---- text helpers -------------------------------------------------------- */
+function txt(g, str, x, y, size, col, align, glow, weight){
+  g.font = (weight||"bold")+" "+size+"px 'Trebuchet MS','Segoe UI',system-ui,sans-serif";
+  g.textAlign = align||"left";
+  g.textBaseline = "middle";
+  if(glow){ g.shadowColor = glow; g.shadowBlur = size*0.55; }
+  g.fillStyle = col;
+  g.fillText(str, x, y);
+  g.shadowBlur = 0;
+}
+function measure(g, str, size, weight){
+  g.font = (weight||"bold")+" "+size+"px 'Trebuchet MS','Segoe UI',system-ui,sans-serif";
+  return g.measureText(str).width;
+}
+
+/* ---- background ---------------------------------------------------------- */
+var BG_HUE = 0;
+function drawBackground(g, v, level, t, bass){
+  var W = v.w, H = v.h, meta = level ? level.meta : null;
+  var hue = meta ? (meta.hue||0) : 0;
+  BG_HUE += (hue - BG_HUE)*0.04;
+
+  g.save();
+  g.fillStyle = meta ? meta.bgColor : COLORS.void;
+  g.fillRect(0,0,W,H);
+
+  var hi = Save.data.settings.highContrast;
+  g.globalAlpha = hi ? 0.25 : 0.85;
+
+  // far layer: the sunset backdrop, or a gradient plus a sun if it is missing
+  var sunset = Assets.get("bg-sunset", W);
+  var px = -(v.camX*0.12) % (W*1.6);
+  if(sunset){
+    for(var i=-1;i<=1;i++) g.drawImage(sunset, px + i*W*1.6, 0, W*1.6, H);
+  } else {
+    var grd = g.createLinearGradient(0,0,0,H);
+    grd.addColorStop(0, "#1a0b3d"); grd.addColorStop(0.62, "#55146b"); grd.addColorStop(1, "#b3255f");
+    g.fillStyle = grd; g.fillRect(0,0,W,H*0.92);
+    g.globalAlpha *= 0.55;
+    g.beginPath(); g.arc(W*0.5 + (px%W)*0.2, H*0.62, H*0.30, 0, 6.2832);
+    g.fillStyle = COLORS.gold; g.fill();
+  }
+
+  // near layer: the grid, pulsing gently with the bass
+  g.globalAlpha = (hi ? 0.10 : 0.30) + bass*(Save.data.settings.reducedMotion ? 0.05 : 0.22);
+  var grid = Assets.get("bg-grid", 300*v.scale);
+  var tile = 300*v.scale;
+  var ox = -((v.camX*0.45*v.scale) % tile);
+  var oy =  ((v.camY*0.45*v.scale) % tile);
+  if(grid){
+    for(var gx=ox-tile; gx<W+tile; gx+=tile)
+      for(var gy=oy-tile; gy<H+tile; gy+=tile) g.drawImage(grid, gx, gy, tile, tile);
+  } else {
+    g.strokeStyle = COLORS.violet; g.lineWidth = 1;
+    g.beginPath();
+    for(var lx=ox-tile; lx<W+tile; lx+=tile/5){ g.moveTo(lx,0); g.lineTo(lx,H); }
+    for(var ly=oy-tile; ly<H+tile; ly+=tile/5){ g.moveTo(0,ly); g.lineTo(W,ly); }
+    g.stroke();
+  }
+
+  if(hue){ g.globalAlpha = 0.16; g.fillStyle = "hsl("+(hue|0)+",70%,45%)"; g.fillRect(0,0,W,H); }
+  g.globalAlpha = 1;
+  g.restore();
+}
+
+/* ---- ground and roof ------------------------------------------------------ */
+function drawGround(g, v, level, t, bass){
+  var W = v.w, H = v.h, U = PHYS.UNIT;
+  var gy = toY(v, 0), cy = toY(v, PHYS.CEIL_BLOCKS*U);
+  var col = level ? level.meta.groundColor : COLORS.deep;
+
+  function slab(y0, y1, edgeY){
+    y0 = Math.max(y0, -U*v.scale); y1 = Math.min(y1, H + U*v.scale);
+    if(y1 <= y0) return;
+    g.fillStyle = col;
+    g.fillRect(0, y0, W, y1-y0);
+
+    var s = U*v.scale, ox = -((v.camX*v.scale) % s);
+    var tile = Assets.get("ground-tile", s);
+    g.globalAlpha = 0.35;
+    if(tile){
+      for(var x=ox-s; x<W+s; x+=s)
+        for(var y=y0; y<y1; y+=s) g.drawImage(tile, x, y, s, s);
+    } else {
+      g.strokeStyle = "rgba(45,226,230,.18)"; g.lineWidth = 1;
+      g.beginPath();
+      for(var x2=ox-s; x2<W+s; x2+=s){ g.moveTo(x2, y0); g.lineTo(x2, y1); }
+      for(var y2=y0; y2<y1; y2+=s){ g.moveTo(0, y2); g.lineTo(W, y2); }
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+
+    g.save();                                   // glowing lip along the surface
+    g.shadowColor = COLORS.cyan; g.shadowBlur = 16 + bass*22;
+    g.fillStyle = COLORS.cyan;
+    g.fillRect(0, edgeY-2, W, 4);
+    g.restore();
+  }
+
+  slab(gy, H + U*v.scale, gy);                  // floor
+  slab(-U*v.scale, cy, cy);                     // roof
+}
+
+/* ---- world objects --------------------------------------------------------- */
+function drawSprite(g, v, key, wx, wy, ww, wh, rot, glow, alpha){
+  var sw = ww*v.scale, sh = wh*v.scale;
+  var sx = toX(v, wx), sy = toY(v, wy+wh);
+  if(sx > v.w+60 || sx+sw < -60) return;
+  g.save();
+  if(alpha !== undefined) g.globalAlpha = alpha;
+  if(rot){
+    g.translate(sx+sw/2, sy+sh/2);
+    g.rotate(rot*Math.PI/180);
+    g.translate(-sw/2, -sh/2);
+  } else {
+    g.translate(sx, sy);
+  }
+  if(glow){ g.shadowColor = glow; g.shadowBlur = Math.min(26, sw*0.55); }
+  var ras = Assets.get(key, sw) || ProcCache.get(key, sw, sh);
+  g.drawImage(ras, 0, 0, sw, sh);
+  g.restore();
+}
+
+var GameTime = 0;
+
+function drawWorld(g, v, level, sim, t){
+  var list = level.draw;
+  var left = v.camX - PHYS.UNIT*3, right = v.camX + v.viewW + PHYS.UNIT*3;
+  for(var i=lowerBound(list, left); i<list.length; i++){
+    var o = list[i];
+    if(o.x > right) break;
+    var def = o.def, key = def.sprite;
+
+    if(def.kind === "finish"){
+      var fx = toX(v, o.x), h = v.h;
+      g.save();
+      g.shadowColor = COLORS.lime; g.shadowBlur = 30;
+      var grd = g.createLinearGradient(fx-6,0,fx+6,0);
+      grd.addColorStop(0,"rgba(124,255,107,0)");
+      grd.addColorStop(0.5,"rgba(124,255,107,.95)");
+      grd.addColorStop(1,"rgba(124,255,107,0)");
+      g.fillStyle = grd; g.fillRect(fx-10, 0, 20, h);
+      g.restore();
+      continue;
+    }
+    if(!key) continue;
+
+    if(sim && sim.used[o.idx] && (def.kind === "coin")) continue;   // collected
+
+    var rot = o.rot;
+    var glow = null;
+    if(def.kind === "orb" || def.kind === "portal"){
+      glow = PORTAL_TINT[o.t] || (def.kind === "orb" ? ORB_TINT[o.t] : COLORS.violet);
+      if(sim && sim.used[o.idx] && def.kind === "orb") glow = "#555";
+    } else if(def.kind === "coin"){
+      glow = COLORS.gold;
+    }
+    if(def.spin) rot = (t*def.spin) % 360;
+
+    var alpha = (sim && sim.used[o.idx] && def.kind === "orb") ? 0.35
+              : (glow ? 0.86 + 0.14*Math.sin(t*4 + o.idx) : undefined);
+    drawSprite(g, v, key, o.x, o.y, o.w, o.h, rot, glow, alpha);
+  }
+}
+
+var ORB_TINT = {
+  "orb-yellow":"#F9C80E","orb-pink":"#ff7ad9","orb-blue":"#2DE2E6",
+  "orb-green":"#7CFF6B","orb-red":"#FF3864","orb-dash":"#9D4EDD"
+};
+
+var MODE_TINT = {
+  cube:"#2DE2E6", ship:"#FF3864", ball:"#F9C80E",
+  ufo:"#7CFF6B", wave:"#9D4EDD", robot:"#ff9d4e"
+};
+
+/* ---- player ------------------------------------------------------------------ */
+function drawPlayer(g, v, e, t){
+  var m = MODES[e.mode], s = e.mini ? PHYS.MINI.scale : 1;
+  var ww = m.w*PHYS.UNIT*s, wh = m.h*PHYS.UNIT*s;
+  var sw = ww*v.scale, sh = wh*v.scale;
+  var sx = toX(v, e.x-ww/2), sy = toY(v, e.y+wh/2);
+  var tint = MODE_TINT[e.mode] || COLORS.cyan;
+
+  g.save();
+  g.translate(sx+sw/2, sy+sh/2);
+  g.rotate(e.rot*Math.PI/180);
+  if(e.grav < 0) g.scale(1, -1);
+  g.shadowColor = tint; g.shadowBlur = 18;
+  var key = (e.mode === "cube" && e.mini) ? "p-cube-mini" : "p-"+m.sprite;
+  var ras = Assets.get(key, sw) || ProcCache.getPlayer(e.mode, sw, sh, tint, COLORS.gold);
+  g.drawImage(ras, -sw/2, -sh/2, sw, sh);
+  g.restore();
+}
+
+/* ---- debug overlay ------------------------------------------------------------ */
+/* Every box is stroked twice: a dark backing line, then the colour. Without it
+   the overlay is invisible, because a hazard box drawn in the danger colour
+   lands exactly on top of a magenta spike and a solid box on a cyan block.
+   Hazards are drawn in lime for the same reason - it is the one palette colour
+   no obstacle uses, which makes the shrunken spike boxes obvious at a glance. */
+function drawHitboxes(g, v, level, sim){
+  var left = v.camX - PHYS.UNIT*3, right = v.camX + v.viewW + PHYS.UNIT*3, i, b;
+
+  function stroke2(draw){
+    g.lineWidth = 3.5; g.strokeStyle = "rgba(6,3,16,.85)"; draw();
+    g.lineWidth = 1.5; g.strokeStyle = stroke2.col;        draw();
+  }
+  function box(list, col){
+    stroke2.col = col;
+    for(i=lowerBound(list, left); i<list.length; i++){
+      b = list[i];
+      if(b.x0 > right) break;
+      (function(bb){
+        if(bb.r !== undefined){
+          stroke2(function(){
+            g.beginPath(); g.arc(toX(v,bb.cx), toY(v,bb.cy), bb.r*v.scale, 0, 6.2832); g.stroke();
+          });
+        } else {
+          stroke2(function(){
+            g.strokeRect(toX(v,bb.x0), toY(v,bb.y1), (bb.x1-bb.x0)*v.scale, (bb.y1-bb.y0)*v.scale);
+          });
+        }
+      })(b);
+    }
+  }
+  box(level.solids,   "#2DE2E6");
+  box(level.hazards,  "#7CFF6B");
+  box(level.triggers, "#F9C80E");
+
+  for(var k=0;k<sim.ents.length;k++){
+    var e = sim.ents[k], bb2 = entBox(e);
+    stroke2.col = "#FFFFFF";
+    (function(bx){
+      stroke2(function(){
+        g.strokeRect(toX(v,bx.x), toY(v,bx.y), bx.w*v.scale, bx.h*v.scale);
+      });
+    })({ x:e.x-bb2.w/2, y:e.y+bb2.h/2, w:bb2.w, h:bb2.h });
+  }
+
+  var s = Math.max(10, Math.min(v.w,v.h)*0.02);
+  txt(g, "player", 10, v.h-s*4.6, s, "#FFFFFF", "left", "#000");
+  txt(g, "solid",  10, v.h-s*3.4, s, "#2DE2E6", "left", "#000");
+  txt(g, "lethal", 10, v.h-s*2.2, s, "#7CFF6B", "left", "#000");
+  txt(g, "trigger",10, v.h-s*1.0, s, "#F9C80E", "left", "#000");
+}
+
+/* ---- HUD ------------------------------------------------------------------------ */
+function drawHUD(g, v, G){
+  var W = v.w, H = v.h, S = Math.max(11, Math.min(W,H)*0.024);
+  var barW = Math.min(W*0.52, 520), barH = Math.max(10, S*0.95);
+  var bx = (W-barW)/2, by = S*1.0;
+  var rec = Save.level(G.level.meta.id);
+
+  // progress bar
+  g.save();
+  roundRect(g, bx, by, barW, barH, barH/2);
+  g.fillStyle = "rgba(10,5,24,.72)"; g.fill();
+  g.strokeStyle = "rgba(246,242,255,.35)"; g.lineWidth = 1.5; g.stroke();
+  g.save(); g.clip();
+  var pw = barW*G.sim.progress;
+  var grd = g.createLinearGradient(bx,0,bx+barW,0);
+  grd.addColorStop(0, COLORS.cyan); grd.addColorStop(1, COLORS.lime);
+  g.fillStyle = grd; g.fillRect(bx, by, pw, barH);
+  g.restore();
+  // personal best marker
+  var best = G.practice ? rec.practiceBest : rec.best;
+  if(best > 0.01){
+    var mx = bx + barW*best;
+    g.fillStyle = COLORS.gold;
+    g.fillRect(mx-1.5, by-3, 3, barH+6);
+  }
+  g.restore();
+
+  txt(g, Math.floor(G.sim.progress*100)+"%", bx+barW+S*0.7, by+barH/2, S, COLORS.ink, "left", COLORS.cyan);
+  txt(g, G.level.meta.name, bx-S*0.7, by+barH/2, S, "rgba(246,242,255,.75)", "right");
+
+  // attempts + mode badge
+  var line2 = by+barH+S*1.3;
+  txt(g, "Attempt "+G.attempts, W/2, line2, S*0.9, "rgba(246,242,255,.8)", "center");
+  if(G.practice) txt(g, "PRACTICE", W/2, line2+S*1.3, S*0.85, COLORS.lime, "center", COLORS.lime);
+
+  // coins
+  var cs = S*0.8;
+  for(var i=0;i<3;i++){
+    var cx = W - S*1.2 - i*(cs*2.1), cy = S*1.5;
+    g.beginPath(); g.arc(cx, cy, cs, 0, 6.2832);
+    var got = G.sim.coins[2-i] || rec.coins[2-i];
+    g.fillStyle = got ? COLORS.gold : "rgba(246,242,255,.14)";
+    if(G.sim.coins[2-i]){ g.shadowColor = COLORS.gold; g.shadowBlur = 12; }
+    g.fill(); g.shadowBlur = 0;
+    g.strokeStyle = "rgba(246,242,255,.35)"; g.lineWidth = 1.2; g.stroke();
+  }
+
+  // the attempt banner fades out over the first second
+  if(G.bannerT > 0){
+    var a = Math.min(1, G.bannerT/0.4);
+    g.globalAlpha = a;
+    txt(g, "ATTEMPT "+G.attempts, W*0.28, H*0.40, S*2.6, COLORS.ink, "center", COLORS.cyan);
+    g.globalAlpha = 1;
+  }
+
+  if(G.hintT > 0){
+    g.globalAlpha = Math.min(1, G.hintT);
+    txt(g, G.hint, W/2, H-S*2.2, S*0.95, COLORS.ink, "center", COLORS.violet);
+    g.globalAlpha = 1;
+  }
+}
+
+/* ==========================================================================
+   Screens. All of it is drawn on the canvas - no DOM widgets - so the menus
+   inherit the same scaling, theming and touch handling as the game itself.
+   ========================================================================== */
+
+var UI = { idx:0, focus:0, count:0, click:false, enter:false, hoverAny:false };
+
+function beginUI(){
+  UI.idx = 0;
+  UI.click = Input.takeClick();
+  UI.enter = keyPressed("Enter") || keyPressed("NumpadEnter");
+  var d = (keyPressed("ArrowDown")?1:0) - (keyPressed("ArrowUp")?1:0);
+  if(d && UI.count) UI.focus = (UI.focus + d + UI.count) % UI.count;
+}
+function endUI(){ UI.count = UI.idx; if(UI.focus >= UI.count) UI.focus = 0; }
+
+function keyLabel(code){
+  if(!code) return "SPACE";
+  return code.replace(/^Key/,"").replace(/^Digit/,"").replace(/^Arrow/,"").toUpperCase();
+}
+
+var KeyEdge = {};
+function keyPressed(code){
+  var d = Input.key(code), was = KeyEdge[code];
+  KeyEdge[code] = d;
+  return d && !was;
+}
+
+function btn(g, label, x, y, w, h, opt){
+  opt = opt || {};
+  var p = Input.pointer;
+  var over = p.x>=x && p.x<=x+w && p.y>=y && p.y<=y+h;
+  var focused = (UI.focus === UI.idx);
+  var accent = opt.accent || COLORS.cyan;
+  var S = h*0.36;
+
+  g.save();
+  roundRect(g, x, y, w, h, h*0.24);
+  g.fillStyle = over||focused ? "rgba(45,226,230,.18)" : "rgba(20,11,46,.72)";
+  g.fill();
+  g.strokeStyle = over||focused ? accent : "rgba(246,242,255,.35)";
+  g.lineWidth = over||focused ? 2.5 : 1.5;
+  if(over||focused){ g.shadowColor = accent; g.shadowBlur = 18; }
+  g.stroke();
+  g.restore();
+  txt(g, label, x+w/2, y+h/2, S, over||focused ? COLORS.ink : "rgba(246,242,255,.82)", "center");
+  if(opt.sub) txt(g, opt.sub, x+w/2, y+h*0.80, S*0.5, "rgba(246,242,255,.55)", "center", null, "normal");
+
+  var hit = (over && UI.click) || (focused && UI.enter);
+  UI.idx++;
+  if(hit) Sound.sfx("click");
+  return hit;
+}
+
+/* Small horizontal slider, 0..1. Returns the (possibly changed) value. */
+function slider(g, label, val, x, y, w, h){
+  var p = Input.pointer, over = p.x>=x && p.x<=x+w && p.y>=y-h && p.y<=y+h*2;
+  txt(g, label, x, y-h*1.5, h*1.3, "rgba(246,242,255,.8)", "left");
+  roundRect(g, x, y, w, h, h/2); g.fillStyle = "rgba(10,5,24,.7)"; g.fill();
+  g.strokeStyle = "rgba(246,242,255,.3)"; g.lineWidth = 1.2; g.stroke();
+  roundRect(g, x, y, Math.max(h, w*val), h, h/2); g.fillStyle = COLORS.cyan; g.fill();
+  g.beginPath(); g.arc(x+w*val, y+h/2, h*1.05, 0, 6.2832);
+  g.fillStyle = COLORS.ink; g.fill();
+  txt(g, Math.round(val*100)+"%", x+w+h*2, y+h/2, h*1.2, "rgba(246,242,255,.7)", "left");
+  if(over && Input.pointer.down) val = clamp((p.x-x)/w, 0, 1);
+  return val;
+}
+
+function toggle(g, label, val, x, y, w, h){
+  if(btn(g, label + "   " + (val ? "ON" : "OFF"), x, y, w, h,
+         {accent: val ? COLORS.lime : COLORS.magenta})) return !val;
+  return val;
+}
+
+/* ---- menu ------------------------------------------------------------------ */
+function sceneMenu(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawBackground(g, v, Game.level || LEVELS[0], GameTime, Sound.bass);
+
+  var logo = Assets.get("ui-logo", Math.min(W*0.62, 620));
+  var lw = Math.min(W*0.62, 620), lh = lw/3;
+  if(logo){
+    g.save(); g.shadowColor = COLORS.cyan; g.shadowBlur = 30;
+    g.drawImage(logo, (W-lw)/2, H*0.13, lw, lh);
+    g.restore();
+  } else {
+    txt(g, "NEON", W/2, H*0.19, S*0.135, COLORS.cyan, "center", COLORS.cyan);
+    txt(g, "DASH", W/2, H*0.31, S*0.135, COLORS.magenta, "center", COLORS.magenta);
+  }
+
+  var bw = Math.min(W*0.42, 360), bh = Math.max(44, S*0.085), gap = bh*0.35;
+  var y0 = H*0.52;
+  beginUI();
+  if(btn(g, "PLAY", (W-bw)/2, y0, bw, bh)) { startLevel(Save.data.lastLevel||0, false); }
+  if(btn(g, "LEVELS", (W-bw)/2, y0+(bh+gap), bw, bh)) Game.scene = "select";
+  if(btn(g, "SETTINGS", (W-bw)/2, y0+(bh+gap)*2, bw, bh)) Game.scene = "settings";
+  endUI();
+
+  txt(g, "space / click / tap to jump", W/2, H-S*0.055, S*0.028,
+      "rgba(246,242,255,.45)", "center", null, "normal");
+  if(!Save.persistent)
+    txt(g, "storage blocked - progress will not be kept", W/2, H-S*0.022, S*0.024,
+        COLORS.magenta, "center", null, "normal");
+}
+
+/* ---- level select ------------------------------------------------------------ */
+var DIFF_COL = { easy:COLORS.lime, normal:COLORS.cyan, hard:COLORS.gold,
+                 harder:"#ff9d4e", insane:COLORS.magenta, demon:COLORS.violet };
+
+function sceneSelect(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawBackground(g, v, LEVELS[0], GameTime, Sound.bass);
+  txt(g, "SELECT LEVEL", W/2, H*0.12, S*0.062, COLORS.ink, "center", COLORS.cyan);
+
+  var n = LEVELS.length;
+  var cw = Math.min(W/(n+0.6), 300), ch = cw*1.15, gap = cw*0.14;
+  var totalW = n*cw + (n-1)*gap, x0 = (W-totalW)/2, y0 = H*0.26;
+
+  beginUI();
+  for(var i=0;i<n;i++){
+    var L = LEVELS[i], rec = Save.level(L.meta.id);
+    var x = x0 + i*(cw+gap);
+    var p = Input.pointer;
+    var over = p.x>=x && p.x<=x+cw && p.y>=y0 && p.y<=y0+ch;
+    var focused = UI.focus === UI.idx;
+    var dc = DIFF_COL[L.meta.difficulty] || COLORS.cyan;
+
+    g.save();
+    roundRect(g, x, y0, cw, ch, cw*0.08);
+    g.fillStyle = over||focused ? "rgba(45,226,230,.16)" : "rgba(20,11,46,.78)";
+    g.fill();
+    g.strokeStyle = over||focused ? dc : "rgba(246,242,255,.3)";
+    g.lineWidth = over||focused ? 3 : 1.5;
+    if(over||focused){ g.shadowColor = dc; g.shadowBlur = 22; }
+    g.stroke();
+    g.restore();
+
+    txt(g, String(i+1), x+cw/2, y0+ch*0.17, cw*0.26, dc, "center", dc);
+    txt(g, L.meta.name, x+cw/2, y0+ch*0.40, cw*0.105, COLORS.ink, "center");
+    txt(g, L.meta.difficulty.toUpperCase(), x+cw/2, y0+ch*0.52, cw*0.075, dc, "center", null, "normal");
+    txt(g, Math.floor(rec.best*100)+"%", x+cw/2, y0+ch*0.66, cw*0.16,
+        rec.completed ? COLORS.lime : COLORS.ink, "center");
+    txt(g, rec.completed ? "COMPLETE" : (L.meta.bpm+" BPM"), x+cw/2, y0+ch*0.76, cw*0.062,
+        rec.completed ? COLORS.lime : "rgba(246,242,255,.5)", "center", null, "normal");
+
+    for(var c=0;c<3;c++){
+      var ccx = x+cw/2 + (c-1)*cw*0.16, ccy = y0+ch*0.88, cr = cw*0.05;
+      g.beginPath(); g.arc(ccx, ccy, cr, 0, 6.2832);
+      g.fillStyle = rec.coins[c] ? COLORS.gold : "rgba(246,242,255,.15)";
+      g.fill();
+      g.strokeStyle = "rgba(246,242,255,.3)"; g.lineWidth = 1; g.stroke();
+    }
+
+    if((over && UI.click) || (focused && UI.enter)){ Sound.sfx("click"); startLevel(i, false); }
+    UI.idx++;
+  }
+
+  var bw = Math.min(W*0.26, 220), bh = Math.max(40, S*0.072);
+  if(btn(g, "BACK", W/2-bw-S*0.012, H*0.86, bw, bh)) Game.scene = "menu";
+  if(btn(g, "EDITOR", W/2+S*0.012, H*0.86, bw, bh, {accent:COLORS.gold})){
+    Editor.returnScene = "select";
+    Editor.open(Editor.draft || null);
+  }
+  endUI();
+}
+
+/* ---- settings ----------------------------------------------------------------- */
+function sceneSettings(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H), s = Save.data.settings;
+  drawBackground(g, v, LEVELS[0], GameTime, Sound.bass);
+  txt(g, "SETTINGS", W/2, H*0.10, S*0.058, COLORS.ink, "center", COLORS.cyan);
+
+  var cw = Math.min(W*0.62, 520), x = (W-cw)/2;
+  var sh = Math.max(10, S*0.022), row = S*0.082, y = H*0.22;
+
+  s.music = slider(g, "Music", s.music, x, y, cw*0.8, sh);          y += row;
+  s.sfx   = slider(g, "Effects", s.sfx,  x, y, cw*0.8, sh);         y += row;
+  s.particles = slider(g, "Particles", s.particles, x, y, cw*0.8, sh); y += row*1.05;
+
+  var bh = Math.max(38, S*0.062);
+  beginUI();
+  s.showHitboxes  = toggle(g, "Show hitboxes", s.showHitboxes,  x, y, cw, bh); y += bh*1.2;
+  s.highContrast  = toggle(g, "High contrast", s.highContrast,  x, y, cw, bh); y += bh*1.2;
+  s.reducedMotion = toggle(g, "Reduced motion", s.reducedMotion, x, y, cw, bh); y += bh*1.2;
+  s.autoRetry     = toggle(g, "Auto retry",     s.autoRetry,     x, y, cw, bh); y += bh*1.2;
+  if(btn(g, Game.rebinding ? "Press any key..." : ("Primary jump key:   " + keyLabel(s.jumpKey)),
+         x, y, cw, bh, {accent: Game.rebinding ? COLORS.gold : COLORS.cyan})){
+    Game.rebinding = true;
+  }
+  y += bh*1.45;
+  if(btn(g, "BACK", x, y, cw, bh)){ Save.flush(); Game.rebinding = false; Game.scene = "menu"; }
+  endUI();
+
+  // Capture the next key press as the new jump binding. Mouse and touch are
+  // never rebound, so a bad choice can always be undone.
+  if(Game.rebinding){
+    for(var code in Input.keys){
+      if(!Input.keys[code] || code === "Escape") continue;
+      s.jumpKey = code;
+      Input.applyBinds();
+      Game.rebinding = false;
+      Sound.sfx("click");
+      Save.flush();
+      break;
+    }
+  }
+
+  Sound.applyVolumes();
+  txt(g, "jump: " + keyLabel(s.jumpKey) + " / W / up / click / tap      pause: esc      retry: R      practice: P      hitboxes: H",
+      W/2, H-S*0.035, S*0.024, "rgba(246,242,255,.45)", "center", null, "normal");
+}
+
+/* ---- pause --------------------------------------------------------------------- */
+function scenePause(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawPlayfield(g, v, 0);                      // frozen frame behind the overlay
+  g.fillStyle = "rgba(10,5,24,.78)"; g.fillRect(0,0,W,H);
+  txt(g, "PAUSED", W/2, H*0.14, S*0.075, COLORS.ink, "center", COLORS.cyan);
+  txt(g, Game.level.meta.name + "   -   " + Math.floor(Game.sim.progress*100) + "%",
+      W/2, H*0.22, S*0.032, "rgba(246,242,255,.7)", "center", null, "normal");
+
+  var bw = Math.min(W*0.4, 340), bh = Math.max(40, S*0.072), gap = bh*0.28, y = H*0.30;
+  var s = Save.data.settings;
+  beginUI();
+  if(btn(g, "RESUME", (W-bw)/2, y, bw, bh)){ Game.scene = "play"; Sound.resume(); } y += bh+gap;
+  if(btn(g, "RETRY",  (W-bw)/2, y, bw, bh)){ Game.scene = "play"; retry(true); }    y += bh+gap;
+  if(btn(g, Game.practice ? "PRACTICE: ON" : "PRACTICE: OFF", (W-bw)/2, y, bw, bh,
+         {accent: Game.practice?COLORS.lime:COLORS.cyan})){ togglePractice(); }      y += bh+gap;
+  if(btn(g, Game.editorReturn ? "BACK TO EDITOR" : "QUIT TO MENU", (W-bw)/2, y, bw, bh, {accent:COLORS.magenta})){
+    Sound.stop(); Game.scene = Game.editorReturn ? "editor" : "select"; Game.editorReturn = false;
+  }
+  y += bh+gap*1.6;
+  s.music = slider(g, "Music", s.music, (W-bw)/2, y, bw*0.74, Math.max(9,S*0.02));
+  y += bh*0.9;
+  s.sfx   = slider(g, "Effects", s.sfx, (W-bw)/2, y, bw*0.74, Math.max(9,S*0.02));
+  endUI();
+  Sound.applyVolumes();
+}
+
+/* ---- end of level ---------------------------------------------------------------- */
+function sceneEnd(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawPlayfield(g, v, dt);
+  g.fillStyle = "rgba(10,5,24,.80)"; g.fillRect(0,0,W,H);
+
+  var rec = Save.level(Game.level.meta.id);
+  txt(g, "LEVEL COMPLETE", W/2, H*0.20, S*0.075, COLORS.lime, "center", COLORS.lime);
+  txt(g, Game.level.meta.name, W/2, H*0.29, S*0.04, COLORS.ink, "center");
+
+  var rows = [
+    ["Progress", "100%"],
+    ["Attempts", String(Game.attempts)],
+    ["Coins", (Game.sim.coins[0]+Game.sim.coins[1]+Game.sim.coins[2]) + " / 3"],
+    ["Total attempts", String(Save.data.totalAttempts)]
+  ];
+  for(var i=0;i<rows.length;i++){
+    var y = H*0.38 + i*S*0.052;
+    txt(g, rows[i][0], W*0.5 - S*0.02, y, S*0.032, "rgba(246,242,255,.65)", "right", null, "normal");
+    txt(g, rows[i][1], W*0.5 + S*0.02, y, S*0.032, COLORS.ink, "left");
+  }
+
+  var bw = Math.min(W*0.32, 260), bh = Math.max(40, S*0.07);
+  beginUI();
+  if(btn(g, "REPLAY", W/2-bw-S*0.012, H*0.76, bw, bh)){ Game.scene="play"; retry(true); }
+  if(btn(g, Game.editorReturn ? "EDITOR" : "LEVELS", W/2+S*0.012, H*0.76, bw, bh)){
+    Sound.stop(); Game.scene = Game.editorReturn ? "editor" : "select"; Game.editorReturn = false;
+  }
+  endUI();
+}
+
+/* ==========================================================================
+   Level editor. Snap-to-grid placement, a palette, instant testing, and
+   import/export through the same JSON schema the shipped levels use, so a
+   level built here drops straight into assets/levels/.
+   ========================================================================== */
+
+var EDITOR_PALETTE = [
+  "spike","spike-mini","spike-triple","block","block-half","slope","saw",
+  "pad-yellow","pad-pink","pad-red","pad-blue",
+  "orb-yellow","orb-pink","orb-red","orb-blue","orb-green","orb-dash",
+  "coin",
+  "portal-cube","portal-ship","portal-ball","portal-ufo","portal-wave","portal-robot",
+  "portal-gravity-up","portal-gravity-down","portal-mini","portal-big",
+  "portal-dual","portal-mirror",
+  "speed-slow","speed-normal","speed-fast","speed-faster",
+  "finish"
+];
+
+var Editor = {
+  src: null, level: null, sim: null,
+  camX: 0, sel: 0, rot: 0,
+  io: null, ioMode: null, returnScene: "select",
+
+  init: function(){
+    this.io = document.getElementById("io");
+    var self = this;
+    // A saved draft survives reloads; it is kept separately from progress.
+    try {
+      var raw = localStorage.getItem("neon-dash-editor-v1");
+      if(raw) this.draft = JSON.parse(raw);
+    } catch(e){}
+  },
+
+  open: function(srcLevel){
+    this.src = JSON.parse(JSON.stringify(srcLevel || this.draft || {
+      meta:{ id:"custom", name:"My Level", difficulty:"normal", bpm:128,
+             musicOffsetMs:0, startMode:"cube", startSpeed:1, lengthBlocks:120,
+             bgColor:"#140B2E", groundColor:"#241148" },
+      objects:[]
+    }));
+    this.camX = 0;
+    this.rebuild();
+    Game.scene = "editor";
+  },
+
+  rebuild: function(){
+    this.level = parseLevel(this.src);
+    this.sim = createSim(this.level);   // only for the used[] flags drawWorld reads
+  },
+
+  save: function(){
+    this.draft = JSON.parse(JSON.stringify(this.src));
+    try { localStorage.setItem("neon-dash-editor-v1", JSON.stringify(this.draft)); setHint("Draft saved"); }
+    catch(e){ setHint("Storage blocked - could not save"); }
+  },
+
+  showIO: function(mode){
+    this.ioMode = mode;
+    this.io.classList.add("on");
+    this.io.value = (mode === "export") ? JSON.stringify(this.src, null, 2) : "";
+    this.io.readOnly = (mode === "export");
+    this.io.focus();
+    if(mode === "export") this.io.select();
+  },
+
+  hideIO: function(commit){
+    if(commit && this.ioMode === "import"){
+      try {
+        var parsed = JSON.parse(this.io.value);
+        if(!parsed.meta || !parsed.objects) throw new Error("missing meta/objects");
+        this.src = parsed;
+        this.rebuild();
+        setHint("Imported " + parsed.objects.length + " objects");
+      } catch(err){ setHint("Import failed: " + err.message); }
+    }
+    this.io.classList.remove("on");
+    this.io.blur();
+    this.ioMode = null;
+  },
+
+  test: function(){
+    // Testing swaps the edited level in without touching the shipped three.
+    var lv = parseLevel(this.src);
+    Game.level = lv;
+    Game.practice = false;
+    Game.checkpoints = [];
+    Game.attempts = 0;
+    Sound.setLevel(lv);
+    View.smoothY = null;
+    retry(true);
+    Game.scene = "play";
+    Game.editorReturn = true;
+  }
+};
+
+function sceneEditor(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H), U = PHYS.UNIT;
+  var E = Editor;
+  if(!E.src){ E.open(null); return; }
+  UI.click = Input.takeClick();
+
+  /* ---- view: free pan, no player to follow --------------------------- */
+  var scale = Math.max(H/(16.5*U), W/(34*U));
+  var view = { scale:scale, camX:E.camX, camY:-2*U, w:W, h:H,
+               viewW:W/scale, viewH:H/scale, shakeX:0, shakeY:0 };
+
+  var panSpeed = 18*U*dt;
+  if(Input.key("ArrowRight") || Input.key("KeyD")) E.camX += panSpeed;
+  if(Input.key("ArrowLeft")  || Input.key("KeyA")) E.camX -= panSpeed;
+  E.camX = Math.max(-4*U, E.camX);
+
+  /* ---- keyboard --------------------------------------------------------- */
+  if(E.ioMode){
+    if(keyPressed("Escape")) E.hideIO(false);
+    if(keyPressed("Enter") && E.ioMode === "import") E.hideIO(true);
+  } else {
+    if(keyPressed("Escape")){ Game.scene = E.returnScene; return; }
+    if(keyPressed("BracketRight")) E.sel = (E.sel+1) % EDITOR_PALETTE.length;
+    if(keyPressed("BracketLeft"))  E.sel = (E.sel-1+EDITOR_PALETTE.length) % EDITOR_PALETTE.length;
+    if(keyPressed("KeyR")) E.rot = (E.rot+90) % 360;
+    if(keyPressed("KeyT")) { E.test(); return; }
+    if(keyPressed("KeyS")) E.save();
+    if(keyPressed("KeyE")) E.showIO("export");
+    if(keyPressed("KeyI")) E.showIO("import");
+  }
+
+  drawBackground(g, view, E.level, GameTime, 0);
+  drawGround(g, view, E.level, GameTime, 0);
+  drawWorld(g, view, E.level, E.sim, GameTime);
+
+  /* ---- grid ------------------------------------------------------------- */
+  g.save();
+  g.globalAlpha = 0.16; g.strokeStyle = COLORS.ink; g.lineWidth = 1;
+  g.beginPath();
+  var gx0 = Math.floor(view.camX/U)*U;
+  for(var wx=gx0; wx < view.camX+view.viewW+U; wx+=U){
+    var sx = toX(view, wx); g.moveTo(sx, 0); g.lineTo(sx, H);
+  }
+  for(var wy=0; wy <= (PHYS.CEIL_BLOCKS+1)*U; wy+=U){
+    var sy = toY(view, wy); g.moveTo(0, sy); g.lineTo(W, sy);
+  }
+  g.stroke();
+  g.restore();
+
+  /* ---- palette strip ----------------------------------------------------- */
+  var ph = Math.max(44, S*0.085), py = H - ph - 6;
+  g.fillStyle = "rgba(10,5,24,.88)"; g.fillRect(0, py-4, W, ph+10);
+  g.strokeStyle = "rgba(45,226,230,.35)"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, py-4); g.lineTo(W, py-4); g.stroke();
+
+  // The palette is wider than any screen, so it scrolls to keep the selected
+  // entry centred, clamped so neither end can be scrolled past.
+  var cell = ph*0.86, pad = cell*0.16, total = EDITOR_PALETTE.length;
+  var step = cell+pad, fullW = total*step;
+  var startX = (fullW <= W-16) ? (W-fullW)/2
+             : clamp(W/2 - (E.sel+0.5)*step, W-fullW-8, 8);
+  var overPalette = Input.pointer.y >= py-4;
+  for(var i=0;i<total;i++){
+    var x = startX + i*(cell+pad), y = py + (ph-cell)/2;
+    if(x+cell < 0 || x > W) continue;
+    var on = (i === E.sel);
+    roundRect(g, x, y, cell, cell, cell*0.16);
+    g.fillStyle = on ? "rgba(45,226,230,.25)" : "rgba(36,17,72,.7)"; g.fill();
+    g.strokeStyle = on ? COLORS.cyan : "rgba(246,242,255,.22)"; g.lineWidth = on?2:1; g.stroke();
+    var key = EDITOR_PALETTE[i];
+    if(key !== "finish"){
+      var d = OBJ[key], iw = cell*0.74, ih = iw*(d.h/d.w);
+      if(ih > cell*0.8){ ih = cell*0.8; iw = ih*(d.w/d.h); }
+      g.save(); g.translate(x+(cell-iw)/2, y+(cell-ih)/2);
+      g.drawImage(Assets.get(d.sprite, iw) || ProcCache.get(d.sprite, iw, ih), 0, 0, iw, ih);
+      g.restore();
+    } else {
+      txt(g, "END", x+cell/2, y+cell/2, cell*0.28, COLORS.lime, "center");
+    }
+    if(overPalette && UI_clickAt(x, y, cell, cell)) E.sel = i;
+  }
+
+  /* ---- cursor and placement ----------------------------------------------- */
+  var p = Input.pointer;
+  if(!overPalette && !E.ioMode){
+    var wxg = Math.floor((p.x/scale + view.camX)/U);
+    var wyg = Math.floor(((H - p.y)/scale + view.camY)/U);
+    wyg = clamp(wyg, 0, PHYS.CEIL_BLOCKS);
+    var key2 = EDITOR_PALETTE[E.sel];
+    var d2 = key2 === "finish" ? OBJ["finish"] : OBJ[key2];
+
+    g.save(); g.globalAlpha = 0.55;
+    var sx2 = toX(view, wxg*U), sy2 = toY(view, (wyg+d2.h)*U);
+    g.strokeStyle = COLORS.gold; g.lineWidth = 2;
+    g.strokeRect(sx2, sy2, d2.w*U*scale, d2.h*U*scale);
+    if(d2.sprite){
+      g.translate(sx2, sy2);
+      var gw = d2.w*U*scale, gh = d2.h*U*scale;
+      g.drawImage(Assets.get(d2.sprite, gw) || ProcCache.get(d2.sprite, gw, gh), 0, 0, gw, gh);
+    }
+    g.restore();
+
+    if(UI.click || (Input.pointer.down && Input.key("ShiftLeft"))){
+      var erase = Input.key("ShiftLeft") || Input.key("ShiftRight");
+      var idx = -1;
+      for(var o=0;o<E.src.objects.length;o++){
+        var ob = E.src.objects[o], od = OBJ[ob.t];
+        if(!od) continue;
+        if(wxg >= ob.x && wxg < ob.x+od.w && wyg >= ob.y && wyg < ob.y+od.h){ idx = o; break; }
+      }
+      if(erase){
+        if(idx >= 0){ E.src.objects.splice(idx,1); E.rebuild(); }
+      } else {
+        if(idx >= 0) E.src.objects.splice(idx,1);
+        var no = { t:key2, x:wxg, y:wyg };
+        if(E.rot) no.rot = E.rot;
+        E.src.objects.push(no);
+        if(key2 === "finish") E.src.meta.lengthBlocks = wxg;
+        else E.src.meta.lengthBlocks = Math.max(E.src.meta.lengthBlocks||0, wxg+6);
+        E.rebuild();
+      }
+    }
+  }
+  UI.click = false;
+
+  /* ---- header ------------------------------------------------------------- */
+  var hs = Math.max(11, S*0.024);
+  g.fillStyle = "rgba(10,5,24,.8)"; g.fillRect(0,0,W,hs*3.1);
+  txt(g, "EDITOR  -  " + E.src.meta.name, 10, hs*1.0, hs*1.1, COLORS.ink, "left", COLORS.cyan);
+  txt(g, EDITOR_PALETTE[E.sel] + (E.rot?"  rot "+E.rot:"") +
+         "   |   " + E.src.objects.length + " objects   |   block " +
+         Math.round(E.camX/U), 10, hs*2.2, hs*0.92, "rgba(246,242,255,.7)", "left", null, "normal");
+  txt(g, "[ ] type   R rotate   shift+click erase   T test   S save   E export   I import   esc back",
+      W-10, hs*1.6, hs*0.85, "rgba(246,242,255,.55)", "right", null, "normal");
+
+  if(E.ioMode){
+    txt(g, E.ioMode === "export" ? "Copy this JSON (esc to close)"
+                                 : "Paste level JSON, then Enter (esc to cancel)",
+        W/2, H*0.10, hs*1.2, COLORS.gold, "center", COLORS.gold);
+  }
+  if(Game.hintT > 0){
+    Game.hintT -= dt;
+    txt(g, Game.hint, W/2, H - ph - hs*2.4, hs*1.05, COLORS.ink, "center", COLORS.violet);
+  }
+}
+
+/* Hit test against the click that beginUI() latched for this frame. */
+function UI_clickAt(x,y,w,h){
+  var p = Input.pointer;
+  return UI.click && p.x>=x && p.x<=x+w && p.y>=y && p.y<=y+h;
+}
+
+/* ==========================================================================
+   Game. A fixed-step accumulator drives the physics at 240 Hz while rendering
+   runs free, so the feel of the game is identical on a 60 Hz laptop and a
+   144 Hz monitor. The clock comes from WebAudio when it exists, which is what
+   keeps the obstacles welded to the beat.
+   ========================================================================== */
+
+var cv, ctx, Game = {
+  scene: "menu",
+  levelIndex: 0, level: null, sim: null,
+  attempts: 0, practice: false, checkpoints: [],
+  deadT: 0, bannerT: 0, shakeT: 0, shakeMag: 0,
+  hint: "", hintT: 0,
+  acc: 0, last: 0,
+  fpsSmooth: 60
+};
+
+function setHint(s){ Game.hint = s; Game.hintT = 2.6; }
+
+function startLevel(i, practice){
+  Game.levelIndex = clamp(i, 0, LEVELS.length-1);
+  Game.level = LEVELS[Game.levelIndex];
+  Game.practice = !!practice;
+  Game.checkpoints = [];
+  Game.attempts = 0;
+  Save.data.lastLevel = Game.levelIndex;
+  Sound.init();
+  Sound.setLevel(Game.level);
+  View.smoothY = null;
+  retry(true);
+  Game.scene = "play";
+}
+
+function retry(fromStart){
+  var cp = (!fromStart && Game.practice && Game.checkpoints.length)
+           ? Game.checkpoints[Game.checkpoints.length-1] : null;
+  Game.sim = cp ? cloneSim(cp) : createSim(Game.level);
+  Game.attempts++;
+  Save.data.totalAttempts++;
+  Save.level(Game.level.meta.id).attempts++;
+  Game.deadT = 0; Game.bannerT = 1.0; Game.acc = 0; Game.shakeT = 0;
+  Particles.clear();
+  Input.pressLatch = false;
+  Sound.start(cp ? cp.t : 0);
+  if(fromStart) View.smoothY = null;
+}
+
+function togglePractice(){
+  Game.practice = !Game.practice;
+  Game.checkpoints = [];
+  setHint(Game.practice ? "Practice mode - Z places a checkpoint, X removes one"
+                        : "Practice mode off");
+  retry(true);
+}
+
+function recordProgress(){
+  var rec = Save.level(Game.level.meta.id);
+  var p = Game.sim.progress;
+  if(Game.practice){ if(p > rec.practiceBest) rec.practiceBest = p; }
+  else if(p > rec.best) rec.best = p;
+  Save.flush();
+}
+
+function finishLevel(){
+  var rec = Save.level(Game.level.meta.id);
+  if(!Game.practice){
+    rec.completed = true;
+    rec.best = 1;
+    for(var i=0;i<3;i++) if(Game.sim.coins[i]) rec.coins[i] = 1;
+  }
+  Save.flush();
+  Sound.sfx("win");
+  Sound.stop();
+  Particles.burst(Game.sim.ents[0].x, Game.sim.ents[0].y, COLORS.lime, 60, 520);
+  Game.scene = "end";
+}
+
+/* ---- drawing the playfield (shared by play, pause and end) ----------------- */
+function drawPlayfield(g, v, dt){
+  var level = Game.level, sim = Game.sim;
+  drawBackground(g, v, level, GameTime, Sound.bass);
+  drawGround(g, v, level, GameTime, Sound.bass);
+
+  g.save();
+  if(sim.mirrorView){                       // mirror portal: flip the world, not the HUD
+    var axis = toX(v, sim.ents[0].x);
+    g.translate(axis*2, 0); g.scale(-1, 1);
+  }
+  drawWorld(g, v, level, sim, GameTime);
+  for(var i=0;i<sim.ents.length;i++) if(sim.ents[i].alive) drawPlayer(g, v, sim.ents[i], GameTime);
+  Particles.draw(g, v);
+  if(Save.data.settings.showHitboxes) drawHitboxes(g, v, level, sim);
+  g.restore();
+
+  // practice checkpoint flags
+  if(Game.practice){
+    for(var c=0;c<Game.checkpoints.length;c++){
+      var cp = Game.checkpoints[c], e = cp.ents[0];
+      var x = toX(v, e.x), y = toY(v, e.y);
+      g.save();
+      g.globalAlpha = 0.85; g.shadowColor = COLORS.lime; g.shadowBlur = 14;
+      g.fillStyle = COLORS.lime;
+      g.fillRect(x-1.5, y-22*v.scale, 3, 24*v.scale);
+      g.beginPath(); g.moveTo(x+1, y-22*v.scale);
+      g.lineTo(x+16*v.scale, y-17*v.scale); g.lineTo(x+1, y-12*v.scale);
+      g.closePath(); g.fill();
+      g.restore();
+    }
+  }
+}
+
+/* ---- the play scene ---------------------------------------------------------- */
+function scenePlay(g, v, dt){
+  var sim = Game.sim, lead = sim.ents[0];
+
+  if(keyPressed("Escape")){ Game.scene = "pause"; return; }
+  if(keyPressed("KeyR")) retry(true);
+  if(keyPressed("KeyP")) togglePractice();
+  if(keyPressed("KeyH")){
+    Save.data.settings.showHitboxes = !Save.data.settings.showHitboxes;
+    setHint("Hitboxes " + (Save.data.settings.showHitboxes ? "on" : "off"));
+  }
+  if(Game.practice){
+    if(keyPressed("KeyZ") && !sim.dead){
+      Game.checkpoints.push(cloneSim(sim));
+      Sound.sfx("click"); setHint("Checkpoint placed");
+    }
+    if(keyPressed("KeyX") && Game.checkpoints.length){
+      Game.checkpoints.pop(); Sound.sfx("click"); setHint("Checkpoint removed");
+    }
+  }
+
+  /* ---- fixed-step physics --------------------------------------------- */
+  if(!sim.dead && !sim.won){
+    Game.acc += dt;
+    var budget = 0;
+    while(Game.acc >= PHYS.TIMESTEP && budget < 600){
+      var hold = Input.down;
+      if(Input.pressLatch){ hold = true; Input.pressLatch = false; }
+      simInput(sim, hold);
+      stepSim(sim, PHYS.TIMESTEP);
+      Game.acc -= PHYS.TIMESTEP;
+      budget++;
+      if(sim.dead || sim.won) break;
+    }
+    if(budget >= 600) Game.acc = 0;          // a long stall must not fast-forward the level
+  }
+
+  /* ---- react to what the simulation reported --------------------------- */
+  for(var i=0;i<sim.events.length;i++){
+    var evd = sim.events[i];
+    switch(evd.type){
+      case "death":
+        Particles.burst(evd.x, evd.y, MODE_TINT[evd.mode]||COLORS.magenta, 36, 520);
+        Particles.burst(evd.x, evd.y, COLORS.ink, 14, 300);
+        Sound.sfx("death");
+        Game.shakeT = Save.data.settings.reducedMotion ? 0 : 0.12;
+        Game.shakeMag = Math.min(v.w,v.h)*0.016;
+        break;
+      case "orb": case "pad":
+        Particles.burst(evd.x, evd.y, ORB_TINT[evd.extra] || COLORS.gold, 12, 220);
+        Sound.sfx(evd.type);
+        break;
+      case "coin":
+        Particles.burst(evd.x, evd.y, COLORS.gold, 24, 260);
+        Sound.sfx("coin");
+        break;
+      case "portal": case "speed": case "mirror":
+        Particles.burst(evd.x, evd.y, COLORS.violet, 20, 300);
+        Sound.sfx("portal");
+        break;
+      case "jump": case "flip":
+        Particles.burst(evd.x, evd.y - 10, MODE_TINT[evd.mode]||COLORS.cyan, 4, 120);
+        break;
+      case "win":
+        break;
+    }
+  }
+  sim.events.length = 0;
+
+  if(sim.won && Game.scene === "play"){ finishLevel(); return; }
+
+  /* ---- trail ------------------------------------------------------------ */
+  if(!sim.dead){
+    for(var k=0;k<sim.ents.length;k++){
+      var e = sim.ents[k];
+      if(!e.alive) continue;
+      var b = entBox(e);
+      Particles.trail(e.x - b.w*0.45, e.y - b.h*0.2*e.grav, MODE_TINT[e.mode]||COLORS.cyan, e.vx);
+    }
+  }
+
+  /* ---- death and retry -------------------------------------------------- */
+  if(sim.dead){
+    if(Game.deadT === 0) recordProgress();
+    Game.deadT += dt;
+    var wants = Input.takePress();
+    if(wants || (Save.data.settings.autoRetry && Game.deadT > 0.55)) retry(false);
+  }
+
+  Particles.update(dt);
+  if(Game.bannerT > 0) Game.bannerT -= dt;
+  if(Game.hintT > 0) Game.hintT -= dt;
+
+  drawPlayfield(g, v, dt);
+  drawHUD(g, v, Game);
+}
+
+/* ---- main loop ------------------------------------------------------------- */
+function resize(){
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  var w = Math.max(320, window.innerWidth), h = Math.max(240, window.innerHeight);
+  cv.width  = Math.floor(w*dpr);
+  cv.height = Math.floor(h*dpr);
+}
+
+function frame(){
+  requestAnimationFrame(frame);
+
+  var now = Sound.clock();
+  var dt = now - Game.last;
+  Game.last = now;
+  if(!(dt > 0) || dt > 0.25) dt = 1/60;        // first frame, tab switch, or a stall
+  GameTime += dt;
+  Game.fpsSmooth += (1/dt - Game.fpsSmooth)*0.05;
+
+  Sound.update();
+
+  var v = computeView(cv, Game.sim, Game.scene === "play" ? dt : 0);
+  if(Game.shakeT > 0){
+    Game.shakeT -= dt;
+    var m = Game.shakeMag * Math.max(0, Game.shakeT/0.12);
+    v.shakeX = (Math.random()-0.5)*m*2;
+    v.shakeY = (Math.random()-0.5)*m*2;
+  } else { v.shakeX = 0; v.shakeY = 0; }
+
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,cv.width,cv.height);
+
+  switch(Game.scene){
+    case "menu":     sceneMenu(ctx, v, dt); break;
+    case "select":   sceneSelect(ctx, v, dt); break;
+    case "settings": sceneSettings(ctx, v, dt); break;
+    case "play":     scenePlay(ctx, v, dt); break;
+    case "pause":    scenePause(ctx, v, dt); break;
+    case "end":      sceneEnd(ctx, v, dt); break;
+    case "editor":   sceneEditor(ctx, v, dt); break;
+  }
+}
+
+function boot(){
+  cv = document.getElementById("game");
+  ctx = cv.getContext("2d", { alpha:false });
+  resize();
+  addEventListener("resize", resize);
+  addEventListener("orientationchange", function(){ setTimeout(resize, 120); });
+
+  Save.load();
+  try {
+    if(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)
+      Save.data.settings.reducedMotion = true;
+  } catch(e){}
+
+  Assets.init();
+  Particles.init(700);
+  Input.init(cv);
+  Input.applyBinds();
+  Editor.init();
+
+  // WebAudio may only start from a gesture, so try on every early interaction.
+  function unlock(){ Sound.init(); Sound.resume(); Sound.applyVolumes(); }
+  addEventListener("pointerdown", unlock);
+  addEventListener("keydown", unlock);
+  addEventListener("touchstart", unlock);
+
+  Game.level = LEVELS[0];
+  Game.sim = createSim(Game.level);
+  Game.last = Sound.clock();
+  requestAnimationFrame(frame);
+}
+
+boot();
+
+</script>
+</body>
+</html>

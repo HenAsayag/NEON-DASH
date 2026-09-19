@@ -1,0 +1,270 @@
+
+/* ==========================================================================
+   Screens. All of it is drawn on the canvas - no DOM widgets - so the menus
+   inherit the same scaling, theming and touch handling as the game itself.
+   ========================================================================== */
+
+var UI = { idx:0, focus:0, count:0, click:false, enter:false, hoverAny:false };
+
+function beginUI(){
+  UI.idx = 0;
+  UI.click = Input.takeClick();
+  UI.enter = keyPressed("Enter") || keyPressed("NumpadEnter");
+  var d = (keyPressed("ArrowDown")?1:0) - (keyPressed("ArrowUp")?1:0);
+  if(d && UI.count) UI.focus = (UI.focus + d + UI.count) % UI.count;
+}
+function endUI(){ UI.count = UI.idx; if(UI.focus >= UI.count) UI.focus = 0; }
+
+function keyLabel(code){
+  if(!code) return "SPACE";
+  return code.replace(/^Key/,"").replace(/^Digit/,"").replace(/^Arrow/,"").toUpperCase();
+}
+
+var KeyEdge = {};
+function keyPressed(code){
+  var d = Input.key(code), was = KeyEdge[code];
+  KeyEdge[code] = d;
+  return d && !was;
+}
+
+function btn(g, label, x, y, w, h, opt){
+  opt = opt || {};
+  var p = Input.pointer;
+  var over = p.x>=x && p.x<=x+w && p.y>=y && p.y<=y+h;
+  var focused = (UI.focus === UI.idx);
+  var accent = opt.accent || COLORS.cyan;
+  var S = h*0.36;
+
+  g.save();
+  roundRect(g, x, y, w, h, h*0.24);
+  g.fillStyle = over||focused ? "rgba(45,226,230,.18)" : "rgba(20,11,46,.72)";
+  g.fill();
+  g.strokeStyle = over||focused ? accent : "rgba(246,242,255,.35)";
+  g.lineWidth = over||focused ? 2.5 : 1.5;
+  if(over||focused){ g.shadowColor = accent; g.shadowBlur = 18; }
+  g.stroke();
+  g.restore();
+  txt(g, label, x+w/2, y+h/2, S, over||focused ? COLORS.ink : "rgba(246,242,255,.82)", "center");
+  if(opt.sub) txt(g, opt.sub, x+w/2, y+h*0.80, S*0.5, "rgba(246,242,255,.55)", "center", null, "normal");
+
+  var hit = (over && UI.click) || (focused && UI.enter);
+  UI.idx++;
+  if(hit) Sound.sfx("click");
+  return hit;
+}
+
+/* Small horizontal slider, 0..1. Returns the (possibly changed) value. */
+function slider(g, label, val, x, y, w, h){
+  var p = Input.pointer, over = p.x>=x && p.x<=x+w && p.y>=y-h && p.y<=y+h*2;
+  txt(g, label, x, y-h*1.5, h*1.3, "rgba(246,242,255,.8)", "left");
+  roundRect(g, x, y, w, h, h/2); g.fillStyle = "rgba(10,5,24,.7)"; g.fill();
+  g.strokeStyle = "rgba(246,242,255,.3)"; g.lineWidth = 1.2; g.stroke();
+  roundRect(g, x, y, Math.max(h, w*val), h, h/2); g.fillStyle = COLORS.cyan; g.fill();
+  g.beginPath(); g.arc(x+w*val, y+h/2, h*1.05, 0, 6.2832);
+  g.fillStyle = COLORS.ink; g.fill();
+  txt(g, Math.round(val*100)+"%", x+w+h*2, y+h/2, h*1.2, "rgba(246,242,255,.7)", "left");
+  if(over && Input.pointer.down) val = clamp((p.x-x)/w, 0, 1);
+  return val;
+}
+
+function toggle(g, label, val, x, y, w, h){
+  if(btn(g, label + "   " + (val ? "ON" : "OFF"), x, y, w, h,
+         {accent: val ? COLORS.lime : COLORS.magenta})) return !val;
+  return val;
+}
+
+/* ---- menu ------------------------------------------------------------------ */
+function sceneMenu(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawBackground(g, v, Game.level || LEVELS[0], GameTime, Sound.bass);
+
+  var logo = Assets.get("ui-logo", Math.min(W*0.62, 620));
+  var lw = Math.min(W*0.62, 620), lh = lw/3;
+  if(logo){
+    g.save(); g.shadowColor = COLORS.cyan; g.shadowBlur = 30;
+    g.drawImage(logo, (W-lw)/2, H*0.13, lw, lh);
+    g.restore();
+  } else {
+    txt(g, "NEON", W/2, H*0.19, S*0.135, COLORS.cyan, "center", COLORS.cyan);
+    txt(g, "DASH", W/2, H*0.31, S*0.135, COLORS.magenta, "center", COLORS.magenta);
+  }
+
+  var bw = Math.min(W*0.42, 360), bh = Math.max(44, S*0.085), gap = bh*0.35;
+  var y0 = H*0.52;
+  beginUI();
+  if(btn(g, "PLAY", (W-bw)/2, y0, bw, bh)) { startLevel(Save.data.lastLevel||0, false); }
+  if(btn(g, "LEVELS", (W-bw)/2, y0+(bh+gap), bw, bh)) Game.scene = "select";
+  if(btn(g, "SETTINGS", (W-bw)/2, y0+(bh+gap)*2, bw, bh)) Game.scene = "settings";
+  endUI();
+
+  txt(g, "space / click / tap to jump", W/2, H-S*0.055, S*0.028,
+      "rgba(246,242,255,.45)", "center", null, "normal");
+  if(!Save.persistent)
+    txt(g, "storage blocked - progress will not be kept", W/2, H-S*0.022, S*0.024,
+        COLORS.magenta, "center", null, "normal");
+}
+
+/* ---- level select ------------------------------------------------------------ */
+var DIFF_COL = { easy:COLORS.lime, normal:COLORS.cyan, hard:COLORS.gold,
+                 harder:"#ff9d4e", insane:COLORS.magenta, demon:COLORS.violet };
+
+function sceneSelect(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawBackground(g, v, LEVELS[0], GameTime, Sound.bass);
+  txt(g, "SELECT LEVEL", W/2, H*0.12, S*0.062, COLORS.ink, "center", COLORS.cyan);
+
+  var n = LEVELS.length;
+  var cw = Math.min(W/(n+0.6), 300), ch = cw*1.15, gap = cw*0.14;
+  var totalW = n*cw + (n-1)*gap, x0 = (W-totalW)/2, y0 = H*0.26;
+
+  beginUI();
+  for(var i=0;i<n;i++){
+    var L = LEVELS[i], rec = Save.level(L.meta.id);
+    var x = x0 + i*(cw+gap);
+    var p = Input.pointer;
+    var over = p.x>=x && p.x<=x+cw && p.y>=y0 && p.y<=y0+ch;
+    var focused = UI.focus === UI.idx;
+    var dc = DIFF_COL[L.meta.difficulty] || COLORS.cyan;
+
+    g.save();
+    roundRect(g, x, y0, cw, ch, cw*0.08);
+    g.fillStyle = over||focused ? "rgba(45,226,230,.16)" : "rgba(20,11,46,.78)";
+    g.fill();
+    g.strokeStyle = over||focused ? dc : "rgba(246,242,255,.3)";
+    g.lineWidth = over||focused ? 3 : 1.5;
+    if(over||focused){ g.shadowColor = dc; g.shadowBlur = 22; }
+    g.stroke();
+    g.restore();
+
+    txt(g, String(i+1), x+cw/2, y0+ch*0.17, cw*0.26, dc, "center", dc);
+    txt(g, L.meta.name, x+cw/2, y0+ch*0.40, cw*0.105, COLORS.ink, "center");
+    txt(g, L.meta.difficulty.toUpperCase(), x+cw/2, y0+ch*0.52, cw*0.075, dc, "center", null, "normal");
+    txt(g, Math.floor(rec.best*100)+"%", x+cw/2, y0+ch*0.66, cw*0.16,
+        rec.completed ? COLORS.lime : COLORS.ink, "center");
+    txt(g, rec.completed ? "COMPLETE" : (L.meta.bpm+" BPM"), x+cw/2, y0+ch*0.76, cw*0.062,
+        rec.completed ? COLORS.lime : "rgba(246,242,255,.5)", "center", null, "normal");
+
+    for(var c=0;c<3;c++){
+      var ccx = x+cw/2 + (c-1)*cw*0.16, ccy = y0+ch*0.88, cr = cw*0.05;
+      g.beginPath(); g.arc(ccx, ccy, cr, 0, 6.2832);
+      g.fillStyle = rec.coins[c] ? COLORS.gold : "rgba(246,242,255,.15)";
+      g.fill();
+      g.strokeStyle = "rgba(246,242,255,.3)"; g.lineWidth = 1; g.stroke();
+    }
+
+    if((over && UI.click) || (focused && UI.enter)){ Sound.sfx("click"); startLevel(i, false); }
+    UI.idx++;
+  }
+
+  var bw = Math.min(W*0.26, 220), bh = Math.max(40, S*0.072);
+  if(btn(g, "BACK", W/2-bw-S*0.012, H*0.86, bw, bh)) Game.scene = "menu";
+  if(btn(g, "EDITOR", W/2+S*0.012, H*0.86, bw, bh, {accent:COLORS.gold})){
+    Editor.returnScene = "select";
+    Editor.open(Editor.draft || null);
+  }
+  endUI();
+}
+
+/* ---- settings ----------------------------------------------------------------- */
+function sceneSettings(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H), s = Save.data.settings;
+  drawBackground(g, v, LEVELS[0], GameTime, Sound.bass);
+  txt(g, "SETTINGS", W/2, H*0.10, S*0.058, COLORS.ink, "center", COLORS.cyan);
+
+  var cw = Math.min(W*0.62, 520), x = (W-cw)/2;
+  var sh = Math.max(10, S*0.022), row = S*0.082, y = H*0.22;
+
+  s.music = slider(g, "Music", s.music, x, y, cw*0.8, sh);          y += row;
+  s.sfx   = slider(g, "Effects", s.sfx,  x, y, cw*0.8, sh);         y += row;
+  s.particles = slider(g, "Particles", s.particles, x, y, cw*0.8, sh); y += row*1.05;
+
+  var bh = Math.max(38, S*0.062);
+  beginUI();
+  s.showHitboxes  = toggle(g, "Show hitboxes", s.showHitboxes,  x, y, cw, bh); y += bh*1.2;
+  s.highContrast  = toggle(g, "High contrast", s.highContrast,  x, y, cw, bh); y += bh*1.2;
+  s.reducedMotion = toggle(g, "Reduced motion", s.reducedMotion, x, y, cw, bh); y += bh*1.2;
+  s.autoRetry     = toggle(g, "Auto retry",     s.autoRetry,     x, y, cw, bh); y += bh*1.2;
+  if(btn(g, Game.rebinding ? "Press any key..." : ("Primary jump key:   " + keyLabel(s.jumpKey)),
+         x, y, cw, bh, {accent: Game.rebinding ? COLORS.gold : COLORS.cyan})){
+    Game.rebinding = true;
+  }
+  y += bh*1.45;
+  if(btn(g, "BACK", x, y, cw, bh)){ Save.flush(); Game.rebinding = false; Game.scene = "menu"; }
+  endUI();
+
+  // Capture the next key press as the new jump binding. Mouse and touch are
+  // never rebound, so a bad choice can always be undone.
+  if(Game.rebinding){
+    for(var code in Input.keys){
+      if(!Input.keys[code] || code === "Escape") continue;
+      s.jumpKey = code;
+      Input.applyBinds();
+      Game.rebinding = false;
+      Sound.sfx("click");
+      Save.flush();
+      break;
+    }
+  }
+
+  Sound.applyVolumes();
+  txt(g, "jump: " + keyLabel(s.jumpKey) + " / W / up / click / tap      pause: esc      retry: R      practice: P      hitboxes: H",
+      W/2, H-S*0.035, S*0.024, "rgba(246,242,255,.45)", "center", null, "normal");
+}
+
+/* ---- pause --------------------------------------------------------------------- */
+function scenePause(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawPlayfield(g, v, 0);                      // frozen frame behind the overlay
+  g.fillStyle = "rgba(10,5,24,.78)"; g.fillRect(0,0,W,H);
+  txt(g, "PAUSED", W/2, H*0.14, S*0.075, COLORS.ink, "center", COLORS.cyan);
+  txt(g, Game.level.meta.name + "   -   " + Math.floor(Game.sim.progress*100) + "%",
+      W/2, H*0.22, S*0.032, "rgba(246,242,255,.7)", "center", null, "normal");
+
+  var bw = Math.min(W*0.4, 340), bh = Math.max(40, S*0.072), gap = bh*0.28, y = H*0.30;
+  var s = Save.data.settings;
+  beginUI();
+  if(btn(g, "RESUME", (W-bw)/2, y, bw, bh)){ Game.scene = "play"; Sound.resume(); } y += bh+gap;
+  if(btn(g, "RETRY",  (W-bw)/2, y, bw, bh)){ Game.scene = "play"; retry(true); }    y += bh+gap;
+  if(btn(g, Game.practice ? "PRACTICE: ON" : "PRACTICE: OFF", (W-bw)/2, y, bw, bh,
+         {accent: Game.practice?COLORS.lime:COLORS.cyan})){ togglePractice(); }      y += bh+gap;
+  if(btn(g, Game.editorReturn ? "BACK TO EDITOR" : "QUIT TO MENU", (W-bw)/2, y, bw, bh, {accent:COLORS.magenta})){
+    Sound.stop(); Game.scene = Game.editorReturn ? "editor" : "select"; Game.editorReturn = false;
+  }
+  y += bh+gap*1.6;
+  s.music = slider(g, "Music", s.music, (W-bw)/2, y, bw*0.74, Math.max(9,S*0.02));
+  y += bh*0.9;
+  s.sfx   = slider(g, "Effects", s.sfx, (W-bw)/2, y, bw*0.74, Math.max(9,S*0.02));
+  endUI();
+  Sound.applyVolumes();
+}
+
+/* ---- end of level ---------------------------------------------------------------- */
+function sceneEnd(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  drawPlayfield(g, v, dt);
+  g.fillStyle = "rgba(10,5,24,.80)"; g.fillRect(0,0,W,H);
+
+  var rec = Save.level(Game.level.meta.id);
+  txt(g, "LEVEL COMPLETE", W/2, H*0.20, S*0.075, COLORS.lime, "center", COLORS.lime);
+  txt(g, Game.level.meta.name, W/2, H*0.29, S*0.04, COLORS.ink, "center");
+
+  var rows = [
+    ["Progress", "100%"],
+    ["Attempts", String(Game.attempts)],
+    ["Coins", (Game.sim.coins[0]+Game.sim.coins[1]+Game.sim.coins[2]) + " / 3"],
+    ["Total attempts", String(Save.data.totalAttempts)]
+  ];
+  for(var i=0;i<rows.length;i++){
+    var y = H*0.38 + i*S*0.052;
+    txt(g, rows[i][0], W*0.5 - S*0.02, y, S*0.032, "rgba(246,242,255,.65)", "right", null, "normal");
+    txt(g, rows[i][1], W*0.5 + S*0.02, y, S*0.032, COLORS.ink, "left");
+  }
+
+  var bw = Math.min(W*0.32, 260), bh = Math.max(40, S*0.07);
+  beginUI();
+  if(btn(g, "REPLAY", W/2-bw-S*0.012, H*0.76, bw, bh)){ Game.scene="play"; retry(true); }
+  if(btn(g, Game.editorReturn ? "EDITOR" : "LEVELS", W/2+S*0.012, H*0.76, bw, bh)){
+    Sound.stop(); Game.scene = Game.editorReturn ? "editor" : "select"; Game.editorReturn = false;
+  }
+  endUI();
+}

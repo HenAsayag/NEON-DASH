@@ -1,0 +1,283 @@
+
+/* ==========================================================================
+   Game. A fixed-step accumulator drives the physics at 240 Hz while rendering
+   runs free, so the feel of the game is identical on a 60 Hz laptop and a
+   144 Hz monitor. The clock comes from WebAudio when it exists, which is what
+   keeps the obstacles welded to the beat.
+   ========================================================================== */
+
+var cv, ctx, Game = {
+  scene: "menu",
+  levelIndex: 0, level: null, sim: null,
+  attempts: 0, practice: false, checkpoints: [],
+  deadT: 0, bannerT: 0, shakeT: 0, shakeMag: 0,
+  hint: "", hintT: 0,
+  acc: 0, last: 0,
+  fpsSmooth: 60
+};
+
+function setHint(s){ Game.hint = s; Game.hintT = 2.6; }
+
+function startLevel(i, practice){
+  Game.levelIndex = clamp(i, 0, LEVELS.length-1);
+  Game.level = LEVELS[Game.levelIndex];
+  Game.practice = !!practice;
+  Game.checkpoints = [];
+  Game.attempts = 0;
+  Save.data.lastLevel = Game.levelIndex;
+  Sound.init();
+  Sound.setLevel(Game.level);
+  View.smoothY = null;
+  retry(true);
+  Game.scene = "play";
+}
+
+function retry(fromStart){
+  var cp = (!fromStart && Game.practice && Game.checkpoints.length)
+           ? Game.checkpoints[Game.checkpoints.length-1] : null;
+  Game.sim = cp ? cloneSim(cp) : createSim(Game.level);
+  Game.attempts++;
+  Save.data.totalAttempts++;
+  Save.level(Game.level.meta.id).attempts++;
+  Game.deadT = 0; Game.bannerT = 1.0; Game.acc = 0; Game.shakeT = 0;
+  Particles.clear();
+  Input.pressLatch = false;
+  Sound.start(cp ? cp.t : 0);
+  if(fromStart) View.smoothY = null;
+}
+
+function togglePractice(){
+  Game.practice = !Game.practice;
+  Game.checkpoints = [];
+  setHint(Game.practice ? "Practice mode - Z places a checkpoint, X removes one"
+                        : "Practice mode off");
+  retry(true);
+}
+
+function recordProgress(){
+  var rec = Save.level(Game.level.meta.id);
+  var p = Game.sim.progress;
+  if(Game.practice){ if(p > rec.practiceBest) rec.practiceBest = p; }
+  else if(p > rec.best) rec.best = p;
+  Save.flush();
+}
+
+function finishLevel(){
+  var rec = Save.level(Game.level.meta.id);
+  if(!Game.practice){
+    rec.completed = true;
+    rec.best = 1;
+    for(var i=0;i<3;i++) if(Game.sim.coins[i]) rec.coins[i] = 1;
+  }
+  Save.flush();
+  Sound.sfx("win");
+  Sound.stop();
+  Particles.burst(Game.sim.ents[0].x, Game.sim.ents[0].y, COLORS.lime, 60, 520);
+  Game.scene = "end";
+}
+
+/* ---- drawing the playfield (shared by play, pause and end) ----------------- */
+function drawPlayfield(g, v, dt){
+  var level = Game.level, sim = Game.sim;
+  drawBackground(g, v, level, GameTime, Sound.bass);
+  drawGround(g, v, level, GameTime, Sound.bass);
+
+  g.save();
+  if(sim.mirrorView){                       // mirror portal: flip the world, not the HUD
+    var axis = toX(v, sim.ents[0].x);
+    g.translate(axis*2, 0); g.scale(-1, 1);
+  }
+  drawWorld(g, v, level, sim, GameTime);
+  for(var i=0;i<sim.ents.length;i++) if(sim.ents[i].alive) drawPlayer(g, v, sim.ents[i], GameTime);
+  Particles.draw(g, v);
+  if(Save.data.settings.showHitboxes) drawHitboxes(g, v, level, sim);
+  g.restore();
+
+  // practice checkpoint flags
+  if(Game.practice){
+    for(var c=0;c<Game.checkpoints.length;c++){
+      var cp = Game.checkpoints[c], e = cp.ents[0];
+      var x = toX(v, e.x), y = toY(v, e.y);
+      g.save();
+      g.globalAlpha = 0.85; g.shadowColor = COLORS.lime; g.shadowBlur = 14;
+      g.fillStyle = COLORS.lime;
+      g.fillRect(x-1.5, y-22*v.scale, 3, 24*v.scale);
+      g.beginPath(); g.moveTo(x+1, y-22*v.scale);
+      g.lineTo(x+16*v.scale, y-17*v.scale); g.lineTo(x+1, y-12*v.scale);
+      g.closePath(); g.fill();
+      g.restore();
+    }
+  }
+}
+
+/* ---- the play scene ---------------------------------------------------------- */
+function scenePlay(g, v, dt){
+  var sim = Game.sim, lead = sim.ents[0];
+
+  if(keyPressed("Escape")){ Game.scene = "pause"; return; }
+  if(keyPressed("KeyR")) retry(true);
+  if(keyPressed("KeyP")) togglePractice();
+  if(keyPressed("KeyH")){
+    Save.data.settings.showHitboxes = !Save.data.settings.showHitboxes;
+    setHint("Hitboxes " + (Save.data.settings.showHitboxes ? "on" : "off"));
+  }
+  if(Game.practice){
+    if(keyPressed("KeyZ") && !sim.dead){
+      Game.checkpoints.push(cloneSim(sim));
+      Sound.sfx("click"); setHint("Checkpoint placed");
+    }
+    if(keyPressed("KeyX") && Game.checkpoints.length){
+      Game.checkpoints.pop(); Sound.sfx("click"); setHint("Checkpoint removed");
+    }
+  }
+
+  /* ---- fixed-step physics --------------------------------------------- */
+  if(!sim.dead && !sim.won){
+    Game.acc += dt;
+    var budget = 0;
+    while(Game.acc >= PHYS.TIMESTEP && budget < 600){
+      var hold = Input.down;
+      if(Input.pressLatch){ hold = true; Input.pressLatch = false; }
+      simInput(sim, hold);
+      stepSim(sim, PHYS.TIMESTEP);
+      Game.acc -= PHYS.TIMESTEP;
+      budget++;
+      if(sim.dead || sim.won) break;
+    }
+    if(budget >= 600) Game.acc = 0;          // a long stall must not fast-forward the level
+  }
+
+  /* ---- react to what the simulation reported --------------------------- */
+  for(var i=0;i<sim.events.length;i++){
+    var evd = sim.events[i];
+    switch(evd.type){
+      case "death":
+        Particles.burst(evd.x, evd.y, MODE_TINT[evd.mode]||COLORS.magenta, 36, 520);
+        Particles.burst(evd.x, evd.y, COLORS.ink, 14, 300);
+        Sound.sfx("death");
+        Game.shakeT = Save.data.settings.reducedMotion ? 0 : 0.12;
+        Game.shakeMag = Math.min(v.w,v.h)*0.016;
+        break;
+      case "orb": case "pad":
+        Particles.burst(evd.x, evd.y, ORB_TINT[evd.extra] || COLORS.gold, 12, 220);
+        Sound.sfx(evd.type);
+        break;
+      case "coin":
+        Particles.burst(evd.x, evd.y, COLORS.gold, 24, 260);
+        Sound.sfx("coin");
+        break;
+      case "portal": case "speed": case "mirror":
+        Particles.burst(evd.x, evd.y, COLORS.violet, 20, 300);
+        Sound.sfx("portal");
+        break;
+      case "jump": case "flip":
+        Particles.burst(evd.x, evd.y - 10, MODE_TINT[evd.mode]||COLORS.cyan, 4, 120);
+        break;
+      case "win":
+        break;
+    }
+  }
+  sim.events.length = 0;
+
+  if(sim.won && Game.scene === "play"){ finishLevel(); return; }
+
+  /* ---- trail ------------------------------------------------------------ */
+  if(!sim.dead){
+    for(var k=0;k<sim.ents.length;k++){
+      var e = sim.ents[k];
+      if(!e.alive) continue;
+      var b = entBox(e);
+      Particles.trail(e.x - b.w*0.45, e.y - b.h*0.2*e.grav, MODE_TINT[e.mode]||COLORS.cyan, e.vx);
+    }
+  }
+
+  /* ---- death and retry -------------------------------------------------- */
+  if(sim.dead){
+    if(Game.deadT === 0) recordProgress();
+    Game.deadT += dt;
+    var wants = Input.takePress();
+    if(wants || (Save.data.settings.autoRetry && Game.deadT > 0.55)) retry(false);
+  }
+
+  Particles.update(dt);
+  if(Game.bannerT > 0) Game.bannerT -= dt;
+  if(Game.hintT > 0) Game.hintT -= dt;
+
+  drawPlayfield(g, v, dt);
+  drawHUD(g, v, Game);
+}
+
+/* ---- main loop ------------------------------------------------------------- */
+function resize(){
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  var w = Math.max(320, window.innerWidth), h = Math.max(240, window.innerHeight);
+  cv.width  = Math.floor(w*dpr);
+  cv.height = Math.floor(h*dpr);
+}
+
+function frame(){
+  requestAnimationFrame(frame);
+
+  var now = Sound.clock();
+  var dt = now - Game.last;
+  Game.last = now;
+  if(!(dt > 0) || dt > 0.25) dt = 1/60;        // first frame, tab switch, or a stall
+  GameTime += dt;
+  Game.fpsSmooth += (1/dt - Game.fpsSmooth)*0.05;
+
+  Sound.update();
+
+  var v = computeView(cv, Game.sim, Game.scene === "play" ? dt : 0);
+  if(Game.shakeT > 0){
+    Game.shakeT -= dt;
+    var m = Game.shakeMag * Math.max(0, Game.shakeT/0.12);
+    v.shakeX = (Math.random()-0.5)*m*2;
+    v.shakeY = (Math.random()-0.5)*m*2;
+  } else { v.shakeX = 0; v.shakeY = 0; }
+
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,cv.width,cv.height);
+
+  switch(Game.scene){
+    case "menu":     sceneMenu(ctx, v, dt); break;
+    case "select":   sceneSelect(ctx, v, dt); break;
+    case "settings": sceneSettings(ctx, v, dt); break;
+    case "play":     scenePlay(ctx, v, dt); break;
+    case "pause":    scenePause(ctx, v, dt); break;
+    case "end":      sceneEnd(ctx, v, dt); break;
+    case "editor":   sceneEditor(ctx, v, dt); break;
+  }
+}
+
+function boot(){
+  cv = document.getElementById("game");
+  ctx = cv.getContext("2d", { alpha:false });
+  resize();
+  addEventListener("resize", resize);
+  addEventListener("orientationchange", function(){ setTimeout(resize, 120); });
+
+  Save.load();
+  try {
+    if(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)
+      Save.data.settings.reducedMotion = true;
+  } catch(e){}
+
+  Assets.init();
+  Particles.init(700);
+  Input.init(cv);
+  Input.applyBinds();
+  Editor.init();
+
+  // WebAudio may only start from a gesture, so try on every early interaction.
+  function unlock(){ Sound.init(); Sound.resume(); Sound.applyVolumes(); }
+  addEventListener("pointerdown", unlock);
+  addEventListener("keydown", unlock);
+  addEventListener("touchstart", unlock);
+
+  Game.level = LEVELS[0];
+  Game.sim = createSim(Game.level);
+  Game.last = Sound.clock();
+  requestAnimationFrame(frame);
+}
+
+boot();

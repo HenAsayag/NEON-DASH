@@ -1,0 +1,22 @@
+{
+  "unit": 30,
+  "colors": {
+    "void": "#140B2E",
+    "deep": "#241148",
+    "cyan": "#2DE2E6",
+    "magenta": "#FF3864",
+    "gold": "#F9C80E",
+    "violet": "#9D4EDD",
+    "lime": "#7CFF6B",
+    "ink": "#F6F2FF",
+    "shadow": "#0A0518"
+  },
+  "usage": {
+    "background": "void / bg-sunset",
+    "solid": "deep + cyan outline",
+    "danger": "magenta",
+    "player": "cyan (primary) + gold (secondary)",
+    "pickup": "gold",
+    "portal-glow": "per portal type"
+  }
+}

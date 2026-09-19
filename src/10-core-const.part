@@ -1,0 +1,108 @@
+
+/*==CORE_START==*/
+/* --------------------------------------------------------------------------
+   CORE - everything up to CORE_END is pure logic: no DOM, no canvas, no audio.
+   tools/verify.js evaluates exactly this block in Node to prove every level
+   is beatable with the real physics.
+   -------------------------------------------------------------------------- */
+
+var COLORS = {
+  void:"#140B2E", deep:"#241148", cyan:"#2DE2E6", magenta:"#FF3864",
+  gold:"#F9C80E", violet:"#9D4EDD", lime:"#7CFF6B", ink:"#F6F2FF", shadow:"#0A0518"
+};
+
+var PHYS = {
+  UNIT: 30,
+  TIMESTEP: 1/240,          // fixed simulation step; rendering is decoupled
+  SPEEDS: { slow:0.807, normal:1.0, fast:1.243, faster:1.502, fastest:1.849 },
+  BASE_VX: 311.6,           // 10.386 blocks/s at speed 1
+
+  // Cube: 2 blocks of jump height at every speed. 555^2/(2*2560) = 60.2px = 2.006 blocks.
+  CUBE:  { gravity:2560, jumpV:555, maxFall:600, rotDegPerSec:415 },
+  MINI:  { scale:0.6, gravityMul:1.25, jumpVMul:0.86 },
+  SHIP:  { gravity:1550, thrust:2350, maxUp:470, maxDown:470, tiltMaxDeg:28 },
+  BALL:  { gravity:2000, maxFall:470, flipCooldown:0.08 },
+  UFO:   { gravity:2000, impulse:430, maxFall:480 },
+  WAVE:  { slopeRatio:1.0, miniSlopeRatio:1.6 },
+  ROBOT: { gravity:2560, jumpV:555, maxChargeSec:0.30, maxJumpMul:1.35 },
+
+  CEIL_BLOCKS: 12,          // solid roof; reverse gravity lands you on it
+  TAP_BUFFER: 6/60,         // orb forgiveness: 6 frames either side of contact
+  COYOTE: 0.055,            // grace period for jumps just after leaving a ledge
+  DEATH_FLOOR: -6,          // fall past this (in blocks) and you die
+};
+
+/* Impulse needed to rise `blocks` blocks under `gravity`: v = sqrt(2*g*h).
+   Keeps pad and orb strengths readable in level-design terms. */
+function impulseFor(blocks, gravity){ return Math.sqrt(2 * gravity * blocks * PHYS.UNIT); }
+
+/* --------------------------------------------------------------------------
+   Object table. Sizes in blocks. A cell's origin is its bottom-left corner at
+   (x, y), where y counts up from the floor line, so y:0 rests on the floor.
+   `hit` is the lethal box for hazards: deliberately far smaller than the art.
+   -------------------------------------------------------------------------- */
+var OBJ = {
+  /* hazards ----------------------------------------------------------- */
+  "spike":        { w:1,   h:1,   kind:"hazard", hit:{w:0.40,h:0.50}, sprite:"spike" },
+  "spike-mini":   { w:1,   h:0.5, kind:"hazard", hit:{w:0.40,h:0.25}, sprite:"spike-mini" },
+  "spike-triple": { w:3,   h:1,   kind:"hazard", hit:{w:0.40,h:0.50}, repeat:3, sprite:"spike-triple" },
+  "saw":          { w:1.5, h:1.5, kind:"hazard", circle:0.55, spin:-320, sprite:"saw" },
+
+  /* solids ------------------------------------------------------------ */
+  "block":        { w:1, h:1,   kind:"solid", sprite:"block" },
+  "block-half":   { w:1, h:0.5, kind:"solid", sprite:"block-half" },
+  "slope":        { w:1, h:1,   kind:"slope", sprite:"slope" },
+
+  /* pads - fire automatically on contact -------------------------------- */
+  "pad-yellow":   { w:1, h:0.4, kind:"pad", jump:3.2, sprite:"pad-yellow" },
+  "pad-pink":     { w:1, h:0.4, kind:"pad", jump:1.6, sprite:"pad-pink" },
+  "pad-red":      { w:1, h:0.4, kind:"pad", jump:4.5, sprite:"pad-red" },
+  "pad-blue":     { w:1, h:0.4, kind:"pad", flip:true, jump:0.9, sprite:"pad-blue" },
+
+  /* orbs - fire only if the player taps while touching them -------------- */
+  "orb-yellow":   { w:1, h:1, kind:"orb", circle:0.75, jump:2.0,  sprite:"orb-yellow" },
+  "orb-pink":     { w:1, h:1, kind:"orb", circle:0.75, jump:1.5,  sprite:"orb-pink" },
+  "orb-red":      { w:1, h:1, kind:"orb", circle:0.75, jump:3.5,  sprite:"orb-red" },
+  "orb-blue":     { w:1, h:1, kind:"orb", circle:0.75, flip:true, jump:0.7, sprite:"orb-blue" },
+  "orb-green":    { w:1, h:1, kind:"orb", circle:0.75, flip:true, jump:2.0, sprite:"orb-green" },
+  "orb-dash":     { w:1, h:1, kind:"orb", circle:0.75, dash:true, sprite:"orb-dash" },
+
+  /* pickups ------------------------------------------------------------- */
+  "coin":         { w:1, h:1, kind:"coin", circle:0.5, sprite:"coin" },
+
+  /* portals ------------------------------------------------------------- */
+  "portal-cube":  { w:1, h:2, kind:"portal", mode:"cube",  sprite:"portal-cube" },
+  "portal-ship":  { w:1, h:2, kind:"portal", mode:"ship",  sprite:"portal-ship" },
+  "portal-ball":  { w:1, h:2, kind:"portal", mode:"ball",  sprite:"portal-ball" },
+  "portal-ufo":   { w:1, h:2, kind:"portal", mode:"ufo",   sprite:"portal-ufo" },
+  "portal-wave":  { w:1, h:2, kind:"portal", mode:"wave",  sprite:"portal-wave" },
+  "portal-robot": { w:1, h:2, kind:"portal", mode:"robot", sprite:"portal-robot" },
+  "portal-gravity-up":   { w:1, h:2, kind:"portal", grav:-1, sprite:"portal-gravity-up" },
+  "portal-gravity-down": { w:1, h:2, kind:"portal", grav: 1, sprite:"portal-gravity-down" },
+  "portal-mini":  { w:1, h:2, kind:"portal", mini:true,   sprite:"portal-mini" },
+  "portal-big":   { w:1, h:2, kind:"portal", mini:false,  sprite:"portal-big" },
+  "portal-dual":  { w:1, h:2, kind:"portal", dual:true,   sprite:"portal-dual" },
+  "portal-mirror":{ w:1, h:2, kind:"portal", mirror:true, sprite:"portal-mirror" },
+
+  /* speed changers ------------------------------------------------------- */
+  "speed-slow":   { w:1, h:1, kind:"portal", speed:0.807, sprite:"speed-slow" },
+  "speed-normal": { w:1, h:1, kind:"portal", speed:1.0,   sprite:"speed-normal" },
+  "speed-fast":   { w:1, h:1, kind:"portal", speed:1.243, sprite:"speed-fast" },
+  "speed-faster": { w:1, h:1, kind:"portal", speed:1.502, sprite:"speed-faster" },
+  "speed-fastest":{ w:1, h:1, kind:"portal", speed:1.849, sprite:"speed-fastest" },
+
+  /* end of level ---------------------------------------------------------- */
+  "finish":       { w:1, h:8, kind:"finish" },
+};
+
+/* Sprite footprint per gamemode, in blocks. The hitbox is 15% smaller. */
+var MODES = {
+  cube:  { w:1,    h:1,    sprite:"cube" },
+  ship:  { w:1.5,  h:1,    sprite:"ship" },
+  ball:  { w:1,    h:1,    sprite:"ball" },
+  ufo:   { w:1.13, h:0.86, sprite:"ufo" },
+  wave:  { w:0.8,  h:0.8,  sprite:"wave" },
+  robot: { w:1,    h:1.13, sprite:"robot" },
+};
+var HITBOX_SHRINK = 0.85;
+var MODE_LIST = ["cube","ship","ball","ufo","wave","robot"];

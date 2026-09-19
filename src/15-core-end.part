@@ -1,0 +1,15 @@
+
+/* Parsed once at load. LEVEL_SRC keeps the authoring JSON around so the editor
+   can round-trip levels through the exact schema in assets/levels/. */
+var LEVELS = LEVEL_SRC.map(parseLevel);
+
+/* The offline level verifier in tools/ picks the core up through this hook. */
+if(typeof module !== "undefined" && module.exports){
+  module.exports = {
+    PHYS:PHYS, OBJ:OBJ, MODES:MODES, COLORS:COLORS,
+    LEVEL_SRC:LEVEL_SRC, LEVELS:LEVELS,
+    parseLevel:parseLevel, createSim:createSim, cloneSim:cloneSim,
+    simInput:simInput, stepSim:stepSim, entBox:entBox, impulseFor:impulseFor
+  };
+}
+/*==CORE_END==*/

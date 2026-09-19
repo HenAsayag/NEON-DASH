@@ -1,0 +1,125 @@
+
+/* --------------------------------------------------------------------------
+   Level parsing. Turns the authoring JSON (see assets/levels/level-schema.json)
+   into three x-sorted lists - solids, hazards, triggers - so each frame only
+   has to look at the handful of objects near the player.
+   -------------------------------------------------------------------------- */
+
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+
+function parseLevel(src){
+  var U = PHYS.UNIT;
+  var meta = {
+    id:"level", name:"Untitled", difficulty:"easy", bpm:120,
+    music:null, musicOffsetMs:0, startMode:"cube", startSpeed:1,
+    lengthBlocks:200, bgColor:COLORS.void, groundColor:COLORS.deep, hue:0
+  };
+  for(var k in (src.meta||{})) meta[k] = src.meta[k];
+
+  var objects=[], solids=[], slopes=[], hazards=[], triggers=[];
+  var raw = src.objects || [];
+
+  for(var i=0;i<raw.length;i++){
+    var o = raw[i], def = OBJ[o.t];
+    if(!def) continue;                                  // unknown ids are skipped, not fatal
+    var sc  = o.scale || 1;
+    var rot = ((o.rot|0) % 360 + 360) % 360;
+    var rec = {
+      idx: objects.length, t:o.t, def:def, rot:rot, scale:sc, flip:!!o.flip,
+      gx:o.x, gy:o.y,
+      x: o.x*U, y: o.y*U,                                // cell origin, bottom-left
+      x0: o.x*U,                                         // alias so lowerBound() works on this list
+      w: def.w*U*sc, h: def.h*U*sc
+    };
+    objects.push(rec);
+
+    var x0=rec.x, y0=rec.y, x1=rec.x+rec.w, y1=rec.y+rec.h;
+    var cx=(x0+x1)/2, cy=(y0+y1)/2;
+
+    switch(def.kind){
+      case "solid":
+        solids.push({x0:x0,y0:y0,x1:x1,y1:y1,o:rec});
+        break;
+
+      case "slope":
+        // Ramp rising to the right, or to the left when flipped.
+        slopes.push({x0:x0,y0:y0,x1:x1,y1:y1,rise:(rec.flip?-1:1),o:rec});
+        break;
+
+      case "hazard":
+        if(def.circle){
+          hazards.push({x0:cx-def.circle*U*sc, x1:cx+def.circle*U*sc,
+                        y0:cy-def.circle*U*sc, y1:cy+def.circle*U*sc,
+                        cx:cx, cy:cy, r:def.circle*U*sc, o:rec});
+        } else {
+          var n = def.repeat || 1;
+          for(var k2=0;k2<n;k2++) hazards.push(spikeBox(rec, k2, n));
+        }
+        break;
+
+      case "pad": case "orb": case "coin": case "portal": case "finish":
+        var tr = {x0:x0,y0:y0,x1:x1,y1:y1,kind:def.kind,o:rec};
+        if(def.circle){ tr.cx=cx; tr.cy=cy; tr.r=def.circle*U*sc;
+                        tr.x0=cx-tr.r; tr.x1=cx+tr.r; tr.y0=cy-tr.r; tr.y1=cy+tr.r; }
+        // Portals get 0.6 blocks of vertical slack so a level authored with the
+        // portal drawn beside the player's path still fires reliably.
+        if(def.kind==="portal"){ tr.y0 -= 0.6*U; tr.y1 += 0.6*U; }
+        if(def.kind==="finish"){ tr.x0=x0; tr.x1=x0+U*0.4; tr.y0=-U*4; tr.y1=y0+def.h*U; }
+        triggers.push(tr);
+        break;
+    }
+  }
+
+  var bySortX = function(a,b){ return a.x0-b.x0; };
+  solids.sort(bySortX); slopes.sort(bySortX); hazards.sort(bySortX); triggers.sort(bySortX);
+
+  // Coins get stable slots 0..2 so saves stay meaningful when a level is edited.
+  var coinSlot = 0;
+  for(var ti=0; ti<triggers.length; ti++)
+    if(triggers[ti].kind==="coin") triggers[ti].slot = coinSlot++;
+
+  var finishX = meta.lengthBlocks*U;
+  for(var t2=0;t2<triggers.length;t2++)
+    if(triggers[t2].kind==="finish") finishX = triggers[t2].x0;
+
+  // Draw order is x-sorted while `objects` keeps authoring order, because the
+  // `used` flags are indexed by position in `objects`.
+  var draw = objects.slice().sort(bySortX);
+
+  return {
+    meta:meta, objects:objects, draw:draw,
+    solids:solids, slopes:slopes, hazards:hazards, triggers:triggers,
+    finishX:finishX, coinCount:coinSlot,
+    beatBlocks: (PHYS.BASE_VX*meta.startSpeed)/PHYS.UNIT*(60/meta.bpm)
+  };
+}
+
+/* Lethal box for a spike. Roughly 40% of the artwork, hugging the base, so a
+   correctly-timed jump never dies on a corner of the drawing. */
+function spikeBox(rec, k, n){
+  var U = PHYS.UNIT, def = rec.def, sc = rec.scale;
+  var cw = (def.w/n)*U*sc, ch = def.h*U*sc;
+  var x0 = rec.x + k*cw, y0 = rec.y;
+  var hw = def.hit.w*U*sc, hh = def.hit.h*U*sc;
+  var b;
+  switch(rec.rot){
+    case 180:  // pointing down: base at the top of the cell
+      b = {x0:x0+(cw-hw)/2, x1:x0+(cw+hw)/2, y0:y0+ch-hh, y1:y0+ch}; break;
+    case 90:   // pointing right: base on the left edge
+      b = {x0:x0, x1:x0+hh, y0:y0+(ch-hw)/2, y1:y0+(ch+hw)/2}; break;
+    case 270:  // pointing left: base on the right edge
+      b = {x0:x0+cw-hh, x1:x0+cw, y0:y0+(ch-hw)/2, y1:y0+(ch+hw)/2}; break;
+    default:   // pointing up
+      b = {x0:x0+(cw-hw)/2, x1:x0+(cw+hw)/2, y0:y0, y1:y0+hh};
+  }
+  b.o = rec; b.sub = k;
+  return b;
+}
+
+/* First index whose x0 could still reach x. Lists are x-sorted and no object is
+   wider than 4 blocks, so stepping back by that much is always enough. */
+function lowerBound(list, x){
+  var lo=0, hi=list.length, target = x - PHYS.UNIT*4;
+  while(lo<hi){ var mid=(lo+hi)>>1; if(list[mid].x0 < target) lo=mid+1; else hi=mid; }
+  return lo;
+}
