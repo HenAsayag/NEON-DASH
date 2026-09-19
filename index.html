@@ -229,6 +229,12 @@ function parseLevel(src){
         // Portals get 0.6 blocks of vertical slack so a level authored with the
         // portal drawn beside the player's path still fires reliably.
         if(def.kind==="portal"){ tr.y0 -= 0.6*U; tr.y1 += 0.6*U; }
+        // Gravity gates mark mandatory section transitions. A player travelling
+        // on the opposite surface must not bypass the return gate.
+        if(def.kind==="portal" && def.grav !== undefined){
+          tr.y0 = -U;
+          tr.y1 = (PHYS.CEIL_BLOCKS+1)*U;
+        }
         if(def.kind==="finish"){ tr.x0=x0; tr.x1=x0+U*0.4; tr.y0=-U*4; tr.y1=y0+def.h*U; }
         triggers.push(tr);
         break;
