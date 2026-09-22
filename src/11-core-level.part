@@ -64,9 +64,9 @@ function parseLevel(src){
         // Portals get 0.6 blocks of vertical slack so a level authored with the
         // portal drawn beside the player's path still fires reliably.
         if(def.kind==="portal"){ tr.y0 -= 0.6*U; tr.y1 += 0.6*U; }
-        // Gravity gates mark mandatory section transitions. A player travelling
-        // on the opposite surface must not bypass the return gate.
-        if(def.kind==="portal" && def.grav !== undefined){
+        // Mode and gravity gates mark mandatory section transitions. Flying
+        // above or below the artwork must not bypass the next section's rules.
+        if(def.kind==="portal" && (def.mode || def.grav !== undefined)){
           tr.y0 = -U;
           tr.y1 = (PHYS.CEIL_BLOCKS+1)*U;
         }
