@@ -3535,6 +3535,10 @@ var Leaderboard = {
         self.name = o.name; Save.data.playerName = o.name; Save.flush();
         self.adoptLocal();
         self.scheduleFlush(true);
+        // A cold network can outrun the entry prompt, leaving a returning player
+        // asked for a nickname they already own. Dismiss it once the real one
+        // lands - names cannot be changed anyway, so there is nothing to lose.
+        if(typeof NameEntry !== "undefined" && NameEntry.open && !NameEntry.busy) NameEntry.close();
       }
     }).catch(function(){ /* offline: keep the cached name */ });
   },
@@ -5301,7 +5305,7 @@ function boot(){
   // Skippable with Escape; anything played before it is claimed is queued and
   // sent the moment a name exists.
   if(!Save.data.playerName){
-    setTimeout(function(){ if(!Leaderboard.name) NameEntry.show(); }, 800);
+    setTimeout(function(){ if(!Leaderboard.name) NameEntry.show(); }, 1800);
   }
 
   Game.level = LEVELS[0];

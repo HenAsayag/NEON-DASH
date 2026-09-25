@@ -297,7 +297,7 @@ function boot(){
   // Skippable with Escape; anything played before it is claimed is queued and
   // sent the moment a name exists.
   if(!Save.data.playerName){
-    setTimeout(function(){ if(!Leaderboard.name) NameEntry.show(); }, 800);
+    setTimeout(function(){ if(!Leaderboard.name) NameEntry.show(); }, 1800);
   }
 
   Game.level = LEVELS[0];
