@@ -99,6 +99,8 @@ var Save = {
     return {
       levels: {},              // id -> {best, completed, practiceBest, coins:[0,0,0], attempts}
       totalAttempts: 0,
+      playerName: "",           // shown on the leaderboard
+      playerId: "",             // stable row key, generated once below
       settings: {
         music: 0.7, sfx: 0.8, particles: 1, showHitboxes: false, jumpKey: "Space",
         highContrast: false, reducedMotion: false, autoRetry: true
@@ -115,6 +117,13 @@ var Save = {
     this.data = d && d.levels ? d : this.defaults();
     var def = this.defaults().settings;
     for(var k in def) if(this.data.settings[k] === undefined) this.data.settings[k] = def[k];
+    if(this.data.playerName === undefined) this.data.playerName = "";
+    // One stable id per install, so a player owns exactly one leaderboard row
+    // per level and improving a score updates it instead of adding another.
+    if(!this.data.playerId){
+      this.data.playerId = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      this.flush();
+    }
     return this.data;
   },
 

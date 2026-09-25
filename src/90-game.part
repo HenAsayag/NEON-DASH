@@ -13,6 +13,7 @@ var cv, ctx, Game = {
   deadT: 0, bannerT: 0, shakeT: 0, shakeMag: 0,
   hint: "", hintT: 0,
   acc: 0, last: 0,
+  scoreLevel: 0,
   fpsSmooth: 60
 };
 
@@ -57,9 +58,17 @@ function togglePractice(){
 function recordProgress(){
   var rec = Save.level(Game.level.meta.id);
   var p = Game.sim.progress;
-  if(Game.practice){ if(p > rec.practiceBest) rec.practiceBest = p; }
-  else if(p > rec.best) rec.best = p;
+  if(Game.practice){
+    if(p > rec.practiceBest) rec.practiceBest = p;
+    Save.flush();
+    return;                       // practice never reaches the board
+  }
+  if(p > rec.best) rec.best = p;
   Save.flush();
+  // Queued after every failed run, not just a new best: on a level nobody has
+  // finished, the attempt count is the number people actually watch.
+  Leaderboard.noteRun(Game.level.meta.id, rec.best,
+                      rec.coins[0]+rec.coins[1]+rec.coins[2], rec.attempts);
 }
 
 function finishLevel(){
@@ -70,6 +79,10 @@ function finishLevel(){
     for(var i=0;i<3;i++) if(Game.sim.coins[i]) rec.coins[i] = 1;
   }
   Save.flush();
+  if(!Game.practice){
+    Leaderboard.record(Game.level.meta.id, 1,
+                      rec.coins[0]+rec.coins[1]+rec.coins[2], rec.attempts);
+  }
   Sound.sfx("win");
   Sound.stop();
   Particles.burst(Game.sim.ents[0].x, Game.sim.ents[0].y, COLORS.lime, 60, 520);
@@ -245,8 +258,11 @@ function frame(){
     case "play":     scenePlay(ctx, v, dt); break;
     case "pause":    scenePause(ctx, v, dt); break;
     case "end":      sceneEnd(ctx, v, dt); break;
+    case "scores":   sceneScores(ctx, v, dt); break;
     case "editor":   sceneEditor(ctx, v, dt); break;
   }
+
+  drawNameOverlay(ctx, v);
 }
 
 function boot(){
@@ -267,12 +283,22 @@ function boot(){
   Input.init(cv);
   Input.applyBinds();
   Editor.init();
+  NameEntry.init();
+  Leaderboard.init();
+  Leaderboard.load(LEVELS[0].meta.id);
 
   // WebAudio may only start from a gesture, so try on every early interaction.
   function unlock(){ Sound.init(); Sound.resume(); Sound.applyVolumes(); }
   addEventListener("pointerdown", unlock);
   addEventListener("keydown", unlock);
   addEventListener("touchstart", unlock);
+
+  // Prompt for a nickname on entry so scores have an owner from the first run.
+  // Skippable with Escape; anything played before it is claimed is queued and
+  // sent the moment a name exists.
+  if(!Save.data.playerName){
+    setTimeout(function(){ if(!Leaderboard.name) NameEntry.show(); }, 800);
+  }
 
   Game.level = LEVELS[0];
   Game.sim = createSim(Game.level);

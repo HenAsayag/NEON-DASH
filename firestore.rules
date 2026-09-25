@@ -1,0 +1,61 @@
+rules_version = '2';
+// Paste into Firebase console → Firestore Database → Rules → Publish.
+// No passwords: every device signs in anonymously and claims one nickname in /names.
+// Scores are per level and can only ever improve. See FIREBASE.md for setup.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn(uid)   { return request.auth != null && request.auth.uid == uid; }
+    function playerName(uid) { return get(/databases/$(database)/documents/players/$(uid)).data.name; }
+    function validName(n)    { return n is string && n.size() >= 2 && n.size() <= 14; }
+
+    // Nickname registry: the document id is the lower-cased name. First come,
+    // first served; never reassigned.
+    match /names/{key} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['uid', 'name'])
+        && request.resource.data.uid == request.auth.uid
+        && validName(request.resource.data.name)
+        && request.resource.data.name.lower() == key
+        && !exists(/databases/$(database)/documents/players/$(request.auth.uid));
+    }
+
+    // One profile per device account; its name must be the one this device just
+    // claimed. getAfter only sees writes from the same commit, which is why the
+    // client writes /names and /players in a single transaction.
+    match /players/{uid} {
+      allow read: if true;
+      allow create: if signedIn(uid)
+        && request.resource.data.keys().hasOnly(['name', 'created'])
+        && validName(request.resource.data.name)
+        && getAfter(/databases/$(database)/documents/names/$(request.resource.data.name.lower())).data.uid == uid;
+    }
+
+    // Best run per level: only your own entry, under your claimed name, and only
+    // ever moving forward. pct is the fraction of the level reached, so 1 means
+    // completed; attempts is how many tries that level has taken.
+    //
+    // A write is allowed when the percent improves, OR when the percent is
+    // unchanged and the attempt count has gone up. That second clause is what
+    // lets the try counter keep climbing on a level the player has not beaten
+    // yet - without it, everything after the first personal best is rejected.
+    // Neither value can ever go down.
+    match /levels/{level}/scores/{uid} {
+      allow read: if true;
+      allow create, update: if signedIn(uid)
+        && request.resource.data.keys().hasOnly(['name', 'pct', 'coins', 'attempts', 'at'])
+        && request.resource.data.name == playerName(uid)
+        && request.resource.data.pct is number
+        && request.resource.data.pct >= 0 && request.resource.data.pct <= 1
+        && request.resource.data.coins is int
+        && request.resource.data.coins >= 0 && request.resource.data.coins <= 3
+        && request.resource.data.attempts is int
+        && request.resource.data.attempts > 0 && request.resource.data.attempts < 1000000
+        && (resource == null
+            || request.resource.data.pct > resource.data.pct
+            || (request.resource.data.pct == resource.data.pct
+                && request.resource.data.attempts > resource.data.attempts));
+    }
+  }
+}

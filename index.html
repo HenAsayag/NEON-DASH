@@ -31,12 +31,25 @@
     box-shadow:0 0 60px rgba(45,226,230,.35)
   }
   #io.on{display:block}
+  /* Name entry for the leaderboard. A real input, because only a real input
+     raises the virtual keyboard on a phone. */
+  #nameinput{
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    display:none;z-index:60;width:min(420px,84vw);
+    background:#12082a;color:#F6F2FF;border:2px solid #2DE2E6;border-radius:10px;
+    padding:16px 18px;font:700 26px "Trebuchet MS",system-ui,sans-serif;
+    letter-spacing:.12em;text-align:center;text-transform:uppercase;outline:none;
+    box-shadow:0 0 60px rgba(45,226,230,.45)
+  }
+  #nameinput.on{display:block}
+  #nameinput::placeholder{color:rgba(246,242,255,.32);letter-spacing:.12em}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="game"></canvas></div>
 <div id="rotate"><div><b>NEON DASH</b>Rotate your device to landscape</div></div>
 <textarea id="io" spellcheck="false"></textarea>
+<input id="nameinput" maxlength="14" spellcheck="false" autocomplete="off" placeholder="YOUR NAME">
 <script>
 "use strict";
 /* ==========================================================================
@@ -1858,6 +1871,744 @@ var LEVEL_SRC = [
     {"t":"spike","x":744,"y":0},
     {"t":"finish","x":757,"y":0}
   ]
+},
+{
+  meta: {
+    "id": "level-04",
+    "name": "Impossible",
+    "difficulty": "demon",
+    "bpm": 180,
+    "music": "assets/audio/level-04.mp3",
+    "musicOffsetMs": 0,
+    "startMode": "cube",
+    "startSpeed": 1.502,
+    "bgColor": "#240733",
+    "groundColor": "#4a0f4f",
+    "hue": 330,
+    "lengthBlocks": 1092
+  },
+  objects: [
+    {"t":"spike","x":21,"y":0},
+    {"t":"spike","x":29,"y":0},
+    {"t":"spike","x":36,"y":0},
+    {"t":"spike","x":44,"y":0},
+    {"t":"spike","x":52,"y":0},
+    {"t":"spike","x":53,"y":0},
+    {"t":"block","x":62,"y":0},
+    {"t":"block","x":63,"y":0},
+    {"t":"block","x":64,"y":0},
+    {"t":"block","x":65,"y":0},
+    {"t":"block","x":66,"y":0},
+    {"t":"block","x":67,"y":0},
+    {"t":"spike-triple","x":73,"y":0},
+    {"t":"spike","x":83,"y":0},
+    {"t":"spike","x":84,"y":0},
+    {"t":"saw","x":91,"y":0},
+    {"t":"spike","x":103,"y":0},
+    {"t":"spike","x":104,"y":0},
+    {"t":"orb-yellow","x":104,"y":2},
+    {"t":"spike","x":105,"y":0},
+    {"t":"spike","x":107,"y":0},
+    {"t":"spike","x":108,"y":0},
+    {"t":"orb-yellow","x":108,"y":4},
+    {"t":"spike","x":109,"y":0},
+    {"t":"spike","x":111,"y":0},
+    {"t":"orb-pink","x":111,"y":6},
+    {"t":"spike","x":112,"y":0},
+    {"t":"spike","x":113,"y":0},
+    {"t":"spike","x":115,"y":0},
+    {"t":"coin","x":115,"y":8},
+    {"t":"spike","x":116,"y":0},
+    {"t":"spike","x":133,"y":0},
+    {"t":"spike","x":140,"y":0},
+    {"t":"spike","x":141,"y":0},
+    {"t":"portal-mini","x":151,"y":0},
+    {"t":"block","x":159,"y":3},
+    {"t":"block","x":160,"y":3},
+    {"t":"block","x":161,"y":3},
+    {"t":"block","x":162,"y":3},
+    {"t":"block","x":163,"y":3},
+    {"t":"block","x":164,"y":3},
+    {"t":"block","x":165,"y":3},
+    {"t":"block","x":166,"y":3},
+    {"t":"block","x":167,"y":3},
+    {"t":"spike","x":168,"y":0},
+    {"t":"block","x":168,"y":3},
+    {"t":"spike","x":169,"y":0},
+    {"t":"block","x":169,"y":3},
+    {"t":"block","x":170,"y":3},
+    {"t":"block","x":171,"y":3},
+    {"t":"block","x":172,"y":3},
+    {"t":"block","x":173,"y":3},
+    {"t":"block","x":174,"y":3},
+    {"t":"block","x":175,"y":3},
+    {"t":"block","x":176,"y":3},
+    {"t":"spike","x":177,"y":0},
+    {"t":"block","x":177,"y":3},
+    {"t":"spike","x":178,"y":0},
+    {"t":"block","x":178,"y":3},
+    {"t":"block","x":179,"y":3},
+    {"t":"block","x":180,"y":3},
+    {"t":"block","x":181,"y":3},
+    {"t":"block","x":182,"y":3},
+    {"t":"block","x":183,"y":3},
+    {"t":"block","x":184,"y":3},
+    {"t":"block","x":185,"y":3},
+    {"t":"spike","x":186,"y":0},
+    {"t":"block","x":186,"y":3},
+    {"t":"spike","x":187,"y":0},
+    {"t":"block","x":187,"y":3},
+    {"t":"block","x":188,"y":3},
+    {"t":"block","x":189,"y":3},
+    {"t":"block","x":190,"y":3},
+    {"t":"block","x":191,"y":3},
+    {"t":"block","x":192,"y":3},
+    {"t":"block","x":193,"y":3},
+    {"t":"block","x":194,"y":3},
+    {"t":"spike","x":195,"y":0},
+    {"t":"block","x":195,"y":3},
+    {"t":"spike","x":196,"y":0},
+    {"t":"block","x":196,"y":3},
+    {"t":"block","x":197,"y":3},
+    {"t":"block","x":198,"y":3},
+    {"t":"block","x":199,"y":3},
+    {"t":"block","x":200,"y":3},
+    {"t":"block","x":201,"y":3},
+    {"t":"block","x":202,"y":3},
+    {"t":"block","x":203,"y":3},
+    {"t":"spike","x":204,"y":0},
+    {"t":"block","x":204,"y":3},
+    {"t":"spike","x":205,"y":0},
+    {"t":"block","x":205,"y":3},
+    {"t":"block","x":206,"y":3},
+    {"t":"block","x":207,"y":3},
+    {"t":"block","x":208,"y":3},
+    {"t":"block","x":209,"y":3},
+    {"t":"block","x":210,"y":3},
+    {"t":"portal-big","x":213,"y":0},
+    {"t":"speed-fastest","x":224,"y":0},
+    {"t":"portal-wave","x":234,"y":0},
+    {"t":"block","x":237,"y":5},
+    {"t":"block","x":238,"y":5},
+    {"t":"block","x":239,"y":5},
+    {"t":"block","x":240,"y":5},
+    {"t":"block","x":241,"y":5},
+    {"t":"block","x":242,"y":5},
+    {"t":"block","x":243,"y":5},
+    {"t":"block","x":244,"y":5},
+    {"t":"block","x":245,"y":5},
+    {"t":"block","x":246,"y":5},
+    {"t":"block","x":247,"y":0},
+    {"t":"block","x":247,"y":1},
+    {"t":"spike","x":247,"y":2},
+    {"t":"block","x":247,"y":5},
+    {"t":"block","x":248,"y":5},
+    {"t":"block","x":249,"y":5},
+    {"t":"block","x":250,"y":5},
+    {"t":"block","x":251,"y":5},
+    {"t":"block","x":252,"y":5},
+    {"t":"spike","x":253,"y":2,"rot":180},
+    {"t":"block","x":253,"y":3},
+    {"t":"block","x":253,"y":4},
+    {"t":"block","x":253,"y":5},
+    {"t":"block","x":254,"y":5},
+    {"t":"block","x":255,"y":5},
+    {"t":"block","x":256,"y":5},
+    {"t":"block","x":257,"y":5},
+    {"t":"block","x":258,"y":5},
+    {"t":"block","x":259,"y":0},
+    {"t":"block","x":259,"y":1},
+    {"t":"spike","x":259,"y":2},
+    {"t":"block","x":259,"y":5},
+    {"t":"block","x":260,"y":5},
+    {"t":"block","x":261,"y":5},
+    {"t":"block","x":262,"y":5},
+    {"t":"block","x":263,"y":5},
+    {"t":"block","x":264,"y":5},
+    {"t":"spike","x":265,"y":2,"rot":180},
+    {"t":"block","x":265,"y":3},
+    {"t":"block","x":265,"y":4},
+    {"t":"block","x":265,"y":5},
+    {"t":"block","x":266,"y":5},
+    {"t":"block","x":267,"y":5},
+    {"t":"block","x":268,"y":5},
+    {"t":"block","x":269,"y":5},
+    {"t":"block","x":270,"y":5},
+    {"t":"block","x":271,"y":0},
+    {"t":"block","x":271,"y":1},
+    {"t":"spike","x":271,"y":2},
+    {"t":"block","x":271,"y":5},
+    {"t":"block","x":272,"y":5},
+    {"t":"block","x":273,"y":5},
+    {"t":"block","x":274,"y":5},
+    {"t":"block","x":275,"y":5},
+    {"t":"block","x":276,"y":5},
+    {"t":"spike","x":277,"y":2,"rot":180},
+    {"t":"block","x":277,"y":3},
+    {"t":"block","x":277,"y":4},
+    {"t":"block","x":277,"y":5},
+    {"t":"block","x":278,"y":5},
+    {"t":"block","x":279,"y":5},
+    {"t":"block","x":280,"y":5},
+    {"t":"block","x":281,"y":5},
+    {"t":"block","x":282,"y":5},
+    {"t":"block","x":283,"y":0},
+    {"t":"block","x":283,"y":1},
+    {"t":"spike","x":283,"y":2},
+    {"t":"block","x":283,"y":5},
+    {"t":"block","x":284,"y":5},
+    {"t":"portal-mini","x":285,"y":2},
+    {"t":"block","x":285,"y":5},
+    {"t":"block","x":286,"y":5},
+    {"t":"block","x":287,"y":5},
+    {"t":"block","x":288,"y":5},
+    {"t":"spike","x":289,"y":2,"rot":180},
+    {"t":"block","x":289,"y":3},
+    {"t":"block","x":289,"y":4},
+    {"t":"block","x":289,"y":5},
+    {"t":"block","x":290,"y":5},
+    {"t":"block","x":291,"y":5},
+    {"t":"block","x":292,"y":5},
+    {"t":"block","x":293,"y":5},
+    {"t":"block","x":294,"y":5},
+    {"t":"block","x":295,"y":0},
+    {"t":"block","x":295,"y":1},
+    {"t":"spike","x":295,"y":2},
+    {"t":"block","x":295,"y":5},
+    {"t":"block","x":296,"y":5},
+    {"t":"block","x":297,"y":5},
+    {"t":"block","x":298,"y":5},
+    {"t":"block","x":299,"y":5},
+    {"t":"block","x":300,"y":5},
+    {"t":"spike","x":301,"y":2,"rot":180},
+    {"t":"block","x":301,"y":3},
+    {"t":"block","x":301,"y":4},
+    {"t":"block","x":301,"y":5},
+    {"t":"block","x":302,"y":5},
+    {"t":"block","x":303,"y":5},
+    {"t":"block","x":304,"y":5},
+    {"t":"block","x":305,"y":5},
+    {"t":"block","x":306,"y":5},
+    {"t":"block","x":307,"y":0},
+    {"t":"block","x":307,"y":1},
+    {"t":"spike","x":307,"y":2},
+    {"t":"block","x":307,"y":5},
+    {"t":"block","x":308,"y":5},
+    {"t":"block","x":309,"y":5},
+    {"t":"block","x":310,"y":5},
+    {"t":"block","x":311,"y":5},
+    {"t":"block","x":312,"y":5},
+    {"t":"spike","x":313,"y":2,"rot":180},
+    {"t":"block","x":313,"y":3},
+    {"t":"block","x":313,"y":4},
+    {"t":"block","x":313,"y":5},
+    {"t":"block","x":314,"y":5},
+    {"t":"block","x":315,"y":5},
+    {"t":"block","x":316,"y":5},
+    {"t":"block","x":317,"y":5},
+    {"t":"block","x":318,"y":5},
+    {"t":"block","x":319,"y":0},
+    {"t":"block","x":319,"y":1},
+    {"t":"spike","x":319,"y":2},
+    {"t":"block","x":319,"y":5},
+    {"t":"block","x":320,"y":5},
+    {"t":"block","x":321,"y":5},
+    {"t":"block","x":322,"y":5},
+    {"t":"block","x":323,"y":5},
+    {"t":"block","x":324,"y":5},
+    {"t":"spike","x":325,"y":2,"rot":180},
+    {"t":"portal-big","x":325,"y":2},
+    {"t":"block","x":325,"y":3},
+    {"t":"block","x":325,"y":4},
+    {"t":"block","x":325,"y":5},
+    {"t":"block","x":326,"y":5},
+    {"t":"block","x":327,"y":5},
+    {"t":"block","x":328,"y":5},
+    {"t":"block","x":329,"y":5},
+    {"t":"block","x":330,"y":5},
+    {"t":"block","x":331,"y":0},
+    {"t":"block","x":331,"y":1},
+    {"t":"spike","x":331,"y":2},
+    {"t":"block","x":331,"y":5},
+    {"t":"block","x":332,"y":5},
+    {"t":"block","x":333,"y":5},
+    {"t":"block","x":334,"y":5},
+    {"t":"block","x":335,"y":5},
+    {"t":"block","x":336,"y":5},
+    {"t":"spike","x":337,"y":2,"rot":180},
+    {"t":"block","x":337,"y":3},
+    {"t":"block","x":337,"y":4},
+    {"t":"block","x":337,"y":5},
+    {"t":"block","x":338,"y":5},
+    {"t":"block","x":339,"y":5},
+    {"t":"block","x":340,"y":5},
+    {"t":"block","x":341,"y":5},
+    {"t":"block","x":342,"y":5},
+    {"t":"block","x":343,"y":5},
+    {"t":"block","x":344,"y":5},
+    {"t":"block","x":345,"y":5},
+    {"t":"portal-cube","x":346,"y":0},
+    {"t":"speed-faster","x":358,"y":0},
+    {"t":"portal-ship","x":366,"y":0},
+    {"t":"block","x":369,"y":5},
+    {"t":"block","x":370,"y":5},
+    {"t":"block","x":371,"y":5},
+    {"t":"block","x":372,"y":5},
+    {"t":"block","x":373,"y":5},
+    {"t":"block","x":374,"y":5},
+    {"t":"block","x":375,"y":5},
+    {"t":"block","x":376,"y":5},
+    {"t":"block","x":377,"y":5},
+    {"t":"block","x":378,"y":5},
+    {"t":"block","x":379,"y":5},
+    {"t":"block","x":380,"y":5},
+    {"t":"block","x":381,"y":0},
+    {"t":"block","x":381,"y":1},
+    {"t":"spike","x":381,"y":2},
+    {"t":"block","x":381,"y":5},
+    {"t":"block","x":382,"y":5},
+    {"t":"block","x":383,"y":5},
+    {"t":"block","x":384,"y":5},
+    {"t":"block","x":385,"y":5},
+    {"t":"block","x":386,"y":5},
+    {"t":"block","x":387,"y":5},
+    {"t":"block","x":388,"y":5},
+    {"t":"spike","x":389,"y":2,"rot":180},
+    {"t":"block","x":389,"y":3},
+    {"t":"block","x":389,"y":4},
+    {"t":"block","x":389,"y":5},
+    {"t":"block","x":390,"y":5},
+    {"t":"block","x":391,"y":5},
+    {"t":"block","x":392,"y":5},
+    {"t":"block","x":393,"y":5},
+    {"t":"coin","x":394,"y":4},
+    {"t":"block","x":394,"y":5},
+    {"t":"block","x":395,"y":5},
+    {"t":"block","x":396,"y":5},
+    {"t":"block","x":397,"y":0},
+    {"t":"block","x":397,"y":1},
+    {"t":"spike","x":397,"y":2},
+    {"t":"block","x":397,"y":5},
+    {"t":"block","x":398,"y":5},
+    {"t":"block","x":399,"y":5},
+    {"t":"block","x":400,"y":5},
+    {"t":"block","x":401,"y":5},
+    {"t":"block","x":402,"y":5},
+    {"t":"block","x":403,"y":5},
+    {"t":"block","x":404,"y":5},
+    {"t":"spike","x":405,"y":2,"rot":180},
+    {"t":"block","x":405,"y":3},
+    {"t":"block","x":405,"y":4},
+    {"t":"block","x":405,"y":5},
+    {"t":"block","x":406,"y":5},
+    {"t":"block","x":407,"y":5},
+    {"t":"block","x":408,"y":5},
+    {"t":"block","x":409,"y":5},
+    {"t":"block","x":410,"y":5},
+    {"t":"block","x":411,"y":5},
+    {"t":"block","x":412,"y":5},
+    {"t":"block","x":413,"y":0},
+    {"t":"block","x":413,"y":1},
+    {"t":"spike","x":413,"y":2},
+    {"t":"block","x":413,"y":5},
+    {"t":"block","x":414,"y":5},
+    {"t":"block","x":415,"y":5},
+    {"t":"block","x":416,"y":5},
+    {"t":"block","x":417,"y":5},
+    {"t":"block","x":418,"y":5},
+    {"t":"block","x":419,"y":5},
+    {"t":"block","x":420,"y":5},
+    {"t":"spike","x":421,"y":2,"rot":180},
+    {"t":"block","x":421,"y":3},
+    {"t":"block","x":421,"y":4},
+    {"t":"block","x":421,"y":5},
+    {"t":"block","x":422,"y":5},
+    {"t":"block","x":423,"y":5},
+    {"t":"block","x":424,"y":5},
+    {"t":"block","x":425,"y":5},
+    {"t":"block","x":426,"y":5},
+    {"t":"block","x":427,"y":5},
+    {"t":"block","x":428,"y":5},
+    {"t":"block","x":429,"y":0},
+    {"t":"block","x":429,"y":1},
+    {"t":"spike","x":429,"y":2},
+    {"t":"block","x":429,"y":5},
+    {"t":"block","x":430,"y":5},
+    {"t":"block","x":431,"y":5},
+    {"t":"block","x":432,"y":5},
+    {"t":"block","x":433,"y":5},
+    {"t":"block","x":434,"y":5},
+    {"t":"block","x":435,"y":5},
+    {"t":"block","x":436,"y":5},
+    {"t":"spike","x":437,"y":2,"rot":180},
+    {"t":"block","x":437,"y":3},
+    {"t":"block","x":437,"y":4},
+    {"t":"block","x":437,"y":5},
+    {"t":"block","x":438,"y":5},
+    {"t":"block","x":439,"y":5},
+    {"t":"block","x":440,"y":5},
+    {"t":"block","x":441,"y":5},
+    {"t":"block","x":442,"y":5},
+    {"t":"block","x":443,"y":5},
+    {"t":"block","x":444,"y":5},
+    {"t":"block","x":445,"y":0},
+    {"t":"block","x":445,"y":1},
+    {"t":"spike","x":445,"y":2},
+    {"t":"block","x":445,"y":5},
+    {"t":"block","x":446,"y":5},
+    {"t":"block","x":447,"y":5},
+    {"t":"block","x":448,"y":5},
+    {"t":"block","x":449,"y":5},
+    {"t":"block","x":450,"y":5},
+    {"t":"block","x":451,"y":5},
+    {"t":"portal-cube","x":452,"y":0},
+    {"t":"portal-ball","x":462,"y":0},
+    {"t":"block","x":466,"y":4},
+    {"t":"block","x":467,"y":4},
+    {"t":"block","x":468,"y":4},
+    {"t":"block","x":469,"y":4},
+    {"t":"block","x":470,"y":4},
+    {"t":"block","x":471,"y":4},
+    {"t":"block","x":472,"y":4},
+    {"t":"block","x":473,"y":4},
+    {"t":"block","x":474,"y":4},
+    {"t":"block","x":475,"y":4},
+    {"t":"block","x":476,"y":4},
+    {"t":"spike","x":477,"y":0},
+    {"t":"block","x":477,"y":4},
+    {"t":"spike","x":478,"y":0},
+    {"t":"block","x":478,"y":4},
+    {"t":"block","x":479,"y":4},
+    {"t":"block","x":480,"y":4},
+    {"t":"block","x":481,"y":4},
+    {"t":"block","x":482,"y":4},
+    {"t":"block","x":483,"y":4},
+    {"t":"block","x":484,"y":4},
+    {"t":"block","x":485,"y":4},
+    {"t":"block","x":486,"y":4},
+    {"t":"spike","x":487,"y":3,"rot":180},
+    {"t":"block","x":487,"y":4},
+    {"t":"spike","x":488,"y":3,"rot":180},
+    {"t":"block","x":488,"y":4},
+    {"t":"block","x":489,"y":4},
+    {"t":"block","x":490,"y":4},
+    {"t":"block","x":491,"y":4},
+    {"t":"block","x":492,"y":4},
+    {"t":"block","x":493,"y":4},
+    {"t":"block","x":494,"y":4},
+    {"t":"block","x":495,"y":4},
+    {"t":"block","x":496,"y":4},
+    {"t":"spike","x":497,"y":0},
+    {"t":"block","x":497,"y":4},
+    {"t":"spike","x":498,"y":0},
+    {"t":"coin","x":498,"y":2},
+    {"t":"block","x":498,"y":4},
+    {"t":"block","x":499,"y":4},
+    {"t":"block","x":500,"y":4},
+    {"t":"block","x":501,"y":4},
+    {"t":"block","x":502,"y":4},
+    {"t":"block","x":503,"y":4},
+    {"t":"block","x":504,"y":4},
+    {"t":"block","x":505,"y":4},
+    {"t":"block","x":506,"y":4},
+    {"t":"spike","x":507,"y":3,"rot":180},
+    {"t":"block","x":507,"y":4},
+    {"t":"spike","x":508,"y":3,"rot":180},
+    {"t":"block","x":508,"y":4},
+    {"t":"block","x":509,"y":4},
+    {"t":"block","x":510,"y":4},
+    {"t":"block","x":511,"y":4},
+    {"t":"block","x":512,"y":4},
+    {"t":"block","x":513,"y":4},
+    {"t":"block","x":514,"y":4},
+    {"t":"block","x":515,"y":4},
+    {"t":"block","x":516,"y":4},
+    {"t":"spike","x":517,"y":0},
+    {"t":"block","x":517,"y":4},
+    {"t":"spike","x":518,"y":0},
+    {"t":"block","x":518,"y":4},
+    {"t":"block","x":519,"y":4},
+    {"t":"block","x":520,"y":4},
+    {"t":"block","x":521,"y":4},
+    {"t":"block","x":522,"y":4},
+    {"t":"block","x":523,"y":4},
+    {"t":"block","x":524,"y":4},
+    {"t":"block","x":525,"y":4},
+    {"t":"block","x":526,"y":4},
+    {"t":"block","x":527,"y":4},
+    {"t":"portal-cube","x":530,"y":0},
+    {"t":"portal-ufo","x":540,"y":0},
+    {"t":"block","x":543,"y":6},
+    {"t":"block","x":544,"y":6},
+    {"t":"block","x":545,"y":6},
+    {"t":"block","x":546,"y":6},
+    {"t":"block","x":547,"y":6},
+    {"t":"block","x":548,"y":6},
+    {"t":"block","x":549,"y":6},
+    {"t":"block","x":550,"y":6},
+    {"t":"block","x":551,"y":6},
+    {"t":"block","x":552,"y":6},
+    {"t":"block","x":553,"y":6},
+    {"t":"block","x":554,"y":0},
+    {"t":"block","x":554,"y":1},
+    {"t":"spike","x":554,"y":2},
+    {"t":"block","x":554,"y":6},
+    {"t":"block","x":555,"y":6},
+    {"t":"block","x":556,"y":6},
+    {"t":"block","x":557,"y":6},
+    {"t":"block","x":558,"y":6},
+    {"t":"block","x":559,"y":6},
+    {"t":"block","x":560,"y":6},
+    {"t":"block","x":561,"y":6},
+    {"t":"spike","x":562,"y":3,"rot":180},
+    {"t":"block","x":562,"y":4},
+    {"t":"block","x":562,"y":5},
+    {"t":"block","x":562,"y":6},
+    {"t":"block","x":563,"y":6},
+    {"t":"block","x":564,"y":6},
+    {"t":"block","x":565,"y":6},
+    {"t":"block","x":566,"y":6},
+    {"t":"block","x":567,"y":6},
+    {"t":"block","x":568,"y":6},
+    {"t":"block","x":569,"y":6},
+    {"t":"block","x":570,"y":0},
+    {"t":"block","x":570,"y":1},
+    {"t":"block","x":570,"y":2},
+    {"t":"spike","x":570,"y":3},
+    {"t":"block","x":570,"y":6},
+    {"t":"block","x":571,"y":6},
+    {"t":"block","x":572,"y":6},
+    {"t":"block","x":573,"y":6},
+    {"t":"block","x":574,"y":6},
+    {"t":"block","x":575,"y":6},
+    {"t":"block","x":576,"y":6},
+    {"t":"block","x":577,"y":6},
+    {"t":"spike","x":578,"y":3,"rot":180},
+    {"t":"block","x":578,"y":4},
+    {"t":"block","x":578,"y":5},
+    {"t":"block","x":578,"y":6},
+    {"t":"block","x":579,"y":6},
+    {"t":"block","x":580,"y":6},
+    {"t":"block","x":581,"y":6},
+    {"t":"block","x":582,"y":6},
+    {"t":"block","x":583,"y":6},
+    {"t":"block","x":584,"y":6},
+    {"t":"block","x":585,"y":6},
+    {"t":"block","x":586,"y":0},
+    {"t":"block","x":586,"y":1},
+    {"t":"spike","x":586,"y":2},
+    {"t":"block","x":586,"y":6},
+    {"t":"block","x":587,"y":6},
+    {"t":"block","x":588,"y":6},
+    {"t":"block","x":589,"y":6},
+    {"t":"block","x":590,"y":6},
+    {"t":"block","x":591,"y":6},
+    {"t":"block","x":592,"y":6},
+    {"t":"block","x":593,"y":6},
+    {"t":"spike","x":594,"y":2,"rot":180},
+    {"t":"block","x":594,"y":3},
+    {"t":"block","x":594,"y":4},
+    {"t":"block","x":594,"y":5},
+    {"t":"block","x":594,"y":6},
+    {"t":"block","x":595,"y":6},
+    {"t":"block","x":596,"y":6},
+    {"t":"block","x":597,"y":6},
+    {"t":"block","x":598,"y":6},
+    {"t":"block","x":599,"y":6},
+    {"t":"block","x":600,"y":6},
+    {"t":"block","x":601,"y":6},
+    {"t":"block","x":602,"y":0},
+    {"t":"block","x":602,"y":1},
+    {"t":"spike","x":602,"y":2},
+    {"t":"block","x":602,"y":6},
+    {"t":"block","x":603,"y":6},
+    {"t":"block","x":604,"y":6},
+    {"t":"block","x":605,"y":6},
+    {"t":"block","x":606,"y":6},
+    {"t":"block","x":607,"y":6},
+    {"t":"block","x":608,"y":6},
+    {"t":"block","x":609,"y":6},
+    {"t":"block","x":610,"y":6},
+    {"t":"portal-cube","x":613,"y":0},
+    {"t":"portal-dual","x":623,"y":0},
+    {"t":"block","x":625,"y":12},
+    {"t":"block","x":626,"y":12},
+    {"t":"block","x":627,"y":12},
+    {"t":"block","x":628,"y":12},
+    {"t":"block","x":629,"y":12},
+    {"t":"block","x":630,"y":12},
+    {"t":"spike","x":631,"y":0},
+    {"t":"spike","x":631,"y":11,"rot":180},
+    {"t":"block","x":631,"y":12},
+    {"t":"block","x":632,"y":12},
+    {"t":"block","x":633,"y":12},
+    {"t":"block","x":634,"y":12},
+    {"t":"block","x":635,"y":12},
+    {"t":"block","x":636,"y":12},
+    {"t":"block","x":637,"y":12},
+    {"t":"block","x":638,"y":12},
+    {"t":"spike","x":639,"y":0},
+    {"t":"spike","x":639,"y":11,"rot":180},
+    {"t":"block","x":639,"y":12},
+    {"t":"block","x":640,"y":12},
+    {"t":"block","x":641,"y":12},
+    {"t":"block","x":642,"y":12},
+    {"t":"block","x":643,"y":12},
+    {"t":"block","x":644,"y":12},
+    {"t":"block","x":645,"y":12},
+    {"t":"block","x":646,"y":12},
+    {"t":"spike","x":647,"y":0},
+    {"t":"spike","x":647,"y":11,"rot":180},
+    {"t":"block","x":647,"y":12},
+    {"t":"block","x":648,"y":12},
+    {"t":"block","x":649,"y":12},
+    {"t":"block","x":650,"y":12},
+    {"t":"block","x":651,"y":12},
+    {"t":"block","x":652,"y":12},
+    {"t":"block","x":653,"y":12},
+    {"t":"spike","x":654,"y":0},
+    {"t":"spike","x":654,"y":11,"rot":180},
+    {"t":"block","x":654,"y":12},
+    {"t":"block","x":655,"y":12},
+    {"t":"block","x":656,"y":12},
+    {"t":"block","x":657,"y":12},
+    {"t":"block","x":658,"y":12},
+    {"t":"block","x":659,"y":12},
+    {"t":"block","x":660,"y":12},
+    {"t":"block","x":661,"y":12},
+    {"t":"spike","x":662,"y":0},
+    {"t":"spike","x":662,"y":11,"rot":180},
+    {"t":"block","x":662,"y":12},
+    {"t":"block","x":663,"y":12},
+    {"t":"block","x":664,"y":12},
+    {"t":"block","x":665,"y":12},
+    {"t":"block","x":666,"y":12},
+    {"t":"block","x":667,"y":12},
+    {"t":"block","x":668,"y":12},
+    {"t":"block","x":669,"y":12},
+    {"t":"spike","x":670,"y":0},
+    {"t":"spike","x":670,"y":11,"rot":180},
+    {"t":"block","x":670,"y":12},
+    {"t":"block","x":671,"y":12},
+    {"t":"block","x":672,"y":12},
+    {"t":"block","x":673,"y":12},
+    {"t":"block","x":674,"y":12},
+    {"t":"block","x":675,"y":12},
+    {"t":"block","x":676,"y":12},
+    {"t":"block","x":677,"y":12},
+    {"t":"spike","x":678,"y":0},
+    {"t":"spike","x":678,"y":11,"rot":180},
+    {"t":"block","x":678,"y":12},
+    {"t":"block","x":679,"y":12},
+    {"t":"block","x":680,"y":12},
+    {"t":"block","x":681,"y":12},
+    {"t":"block","x":682,"y":12},
+    {"t":"block","x":683,"y":12},
+    {"t":"block","x":684,"y":12},
+    {"t":"block","x":685,"y":12},
+    {"t":"spike","x":686,"y":0},
+    {"t":"spike","x":686,"y":11,"rot":180},
+    {"t":"block","x":686,"y":12},
+    {"t":"block","x":687,"y":12},
+    {"t":"block","x":688,"y":12},
+    {"t":"block","x":689,"y":12},
+    {"t":"block","x":690,"y":12},
+    {"t":"block","x":691,"y":12},
+    {"t":"block","x":692,"y":12},
+    {"t":"portal-dual","x":696,"y":0},
+    {"t":"portal-mirror","x":706,"y":0},
+    {"t":"spike","x":717,"y":0},
+    {"t":"spike","x":725,"y":0},
+    {"t":"spike","x":726,"y":0},
+    {"t":"spike-triple","x":735,"y":0},
+    {"t":"portal-mirror","x":745,"y":0},
+    {"t":"orb-dash","x":759,"y":2},
+    {"t":"spike","x":761,"y":0},
+    {"t":"spike","x":762,"y":0},
+    {"t":"spike","x":763,"y":0},
+    {"t":"spike","x":764,"y":0},
+    {"t":"spike","x":765,"y":0},
+    {"t":"spike","x":766,"y":0},
+    {"t":"spike","x":767,"y":0},
+    {"t":"spike","x":768,"y":0},
+    {"t":"spike","x":769,"y":0},
+    {"t":"spike","x":770,"y":0},
+    {"t":"spike","x":771,"y":0},
+    {"t":"spike","x":772,"y":0},
+    {"t":"spike","x":773,"y":0},
+    {"t":"spike","x":774,"y":0},
+    {"t":"saw","x":784,"y":1},
+    {"t":"portal-robot","x":795,"y":0},
+    {"t":"block","x":805,"y":0},
+    {"t":"block","x":805,"y":1},
+    {"t":"block","x":806,"y":0},
+    {"t":"block","x":806,"y":1},
+    {"t":"block","x":807,"y":0},
+    {"t":"block","x":807,"y":1},
+    {"t":"block","x":808,"y":0},
+    {"t":"block","x":808,"y":1},
+    {"t":"block","x":809,"y":0},
+    {"t":"block","x":809,"y":1},
+    {"t":"block","x":810,"y":0},
+    {"t":"block","x":810,"y":1},
+    {"t":"spike","x":818,"y":0},
+    {"t":"spike","x":819,"y":0},
+    {"t":"block","x":829,"y":0},
+    {"t":"block","x":829,"y":1},
+    {"t":"block","x":830,"y":0},
+    {"t":"block","x":830,"y":1},
+    {"t":"block","x":831,"y":0},
+    {"t":"block","x":831,"y":1},
+    {"t":"block","x":832,"y":0},
+    {"t":"block","x":832,"y":1},
+    {"t":"block","x":833,"y":0},
+    {"t":"block","x":833,"y":1},
+    {"t":"block","x":834,"y":0},
+    {"t":"block","x":834,"y":1},
+    {"t":"spike-triple","x":842,"y":0},
+    {"t":"portal-cube","x":852,"y":0},
+    {"t":"speed-fastest","x":862,"y":0},
+    {"t":"spike","x":872,"y":0},
+    {"t":"spike","x":881,"y":0},
+    {"t":"spike","x":882,"y":0},
+    {"t":"pad-red","x":894,"y":0},
+    {"t":"spike","x":895,"y":0},
+    {"t":"spike","x":896,"y":0},
+    {"t":"spike","x":897,"y":0},
+    {"t":"spike","x":898,"y":0},
+    {"t":"spike","x":899,"y":0},
+    {"t":"spike","x":900,"y":0},
+    {"t":"saw","x":913,"y":1},
+    {"t":"spike-triple","x":926,"y":0},
+    {"t":"spike","x":939,"y":0},
+    {"t":"spike","x":940,"y":0},
+    {"t":"block","x":952,"y":0},
+    {"t":"block","x":953,"y":0},
+    {"t":"block","x":954,"y":0},
+    {"t":"block","x":955,"y":0},
+    {"t":"block","x":956,"y":0},
+    {"t":"block","x":957,"y":0},
+    {"t":"spike-triple","x":968,"y":0},
+    {"t":"spike","x":984,"y":0},
+    {"t":"spike","x":996,"y":0},
+    {"t":"spike","x":997,"y":0},
+    {"t":"spike","x":1010,"y":0},
+    {"t":"spike","x":1011,"y":0},
+    {"t":"spike","x":1012,"y":0},
+    {"t":"orb-yellow","x":1013,"y":2},
+    {"t":"spike","x":1014,"y":0},
+    {"t":"spike","x":1015,"y":0},
+    {"t":"spike","x":1016,"y":0},
+    {"t":"orb-red","x":1017,"y":4},
+    {"t":"spike","x":1018,"y":0},
+    {"t":"spike","x":1019,"y":0},
+    {"t":"spike","x":1020,"y":0},
+    {"t":"spike","x":1041,"y":0},
+    {"t":"spike-triple","x":1054,"y":0},
+    {"t":"spike","x":1070,"y":0},
+    {"t":"spike","x":1071,"y":0},
+    {"t":"finish","x":1092,"y":0}
+  ]
 }
 ];
 
@@ -2287,6 +3038,8 @@ var Save = {
     return {
       levels: {},              // id -> {best, completed, practiceBest, coins:[0,0,0], attempts}
       totalAttempts: 0,
+      playerName: "",           // shown on the leaderboard
+      playerId: "",             // stable row key, generated once below
       settings: {
         music: 0.7, sfx: 0.8, particles: 1, showHitboxes: false, jumpKey: "Space",
         highContrast: false, reducedMotion: false, autoRetry: true
@@ -2303,6 +3056,13 @@ var Save = {
     this.data = d && d.levels ? d : this.defaults();
     var def = this.defaults().settings;
     for(var k in def) if(this.data.settings[k] === undefined) this.data.settings[k] = def[k];
+    if(this.data.playerName === undefined) this.data.playerName = "";
+    // One stable id per install, so a player owns exactly one leaderboard row
+    // per level and improving a score updates it instead of adding another.
+    if(!this.data.playerId){
+      this.data.playerId = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      this.flush();
+    }
     return this.data;
   },
 
@@ -2573,6 +3333,587 @@ var Sound = {
         o.start(t); o.stop(t+0.08);
         break;
     }
+  }
+};
+
+/* ==========================================================================
+   Leaderboard - Cloud Firestore + Firebase Anonymous Auth, over REST.
+
+   Same backend and same security model as the pitzi-roll board: every device
+   signs in anonymously, claims one nickname first-come-first-served, and owns
+   exactly one score document per level which can only ever improve.
+
+       names/{lowercased name}      { uid, name }
+       players/{uid}                { name, created }
+       levels/{levelId}/scores/{uid}  { name, pct, coins, attempts, at }
+
+   The difference is the transport. pitzi-roll imports the Firebase SDK from
+   gstatic; this game cannot, because it ships as one HTML file with no
+   dependencies that has to run from a double click. So auth and Firestore are
+   both driven by plain fetch() against their REST endpoints:
+
+       accounts:signUp        anonymous account, returns idToken + uid
+       securetoken/token      refresh when the hour-long idToken expires
+       documents:runQuery     top N by pct
+       documents:commit       atomic two-document nickname claim
+       documents/...  PATCH   write my own score
+
+   The security rules are unchanged by this - request.auth.uid is populated
+   exactly the same way from a Bearer token as it is from the SDK.
+
+   With no apiKey/projectId configured, or if anything above fails, the whole
+   interface is served from localStorage instead. The board always works; being
+   online only changes whose scores you can see.
+
+   Setup lives in FIREBASE.md.
+   ========================================================================== */
+
+var LEADERBOARD = {
+  // Firebase project "neon-dash-41850". These two are public identifiers, not
+  // secrets - firestore.rules is what enforces access. The REST endpoints need
+  // only these; authDomain, appId and the rest of the web config are SDK-only,
+  // and Analytics is not used because it cannot run without the SDK.
+  apiKey:    "AIzaSyCWXJZoJxtxn_IN7qCuLLoc3-awnPKFfhM",
+  projectId: "neon-dash-41850",
+  topN: 10,
+  timeoutMs: 8000,
+  nameMin: 2,
+  nameMax: 14
+};
+
+var Leaderboard = {
+  KEY:      "neon-dash-scores-v1",
+  AUTH_KEY: "neon-dash-auth-v1",
+
+  rows: {},        // levelId -> sorted entries
+  status: {},      // levelId -> "local" | "loading" | "online" | "error"
+  auth: null,      // { uid, idToken, refreshToken, expires }
+  name: null,      // the nickname this device owns
+  lastError: "",
+
+  configured: function(){ return !!(LEADERBOARD.apiKey && LEADERBOARD.projectId); },
+  online: function(){ return this.configured(); },
+
+  docBase: function(){
+    return "https://firestore.googleapis.com/v1/projects/" +
+           encodeURIComponent(LEADERBOARD.projectId) + "/databases/(default)/documents";
+  },
+
+  /* ---- Firestore value marshalling ------------------------------------
+     Firestore wraps every scalar in its type, so both directions need a
+     translation step the Realtime Database would not have required. */
+  toVal: function(v){
+    if(typeof v === "string")  return { stringValue: v };
+    if(typeof v === "boolean") return { booleanValue: v };
+    if(typeof v === "number")  return (v === Math.floor(v) && Math.abs(v) < 9e15)
+                                      ? { integerValue: String(v) }
+                                      : { doubleValue: v };
+    return { nullValue: null };
+  },
+  fromVal: function(f){
+    if(!f) return undefined;
+    if(f.stringValue    !== undefined) return f.stringValue;
+    if(f.integerValue   !== undefined) return Number(f.integerValue);
+    if(f.doubleValue    !== undefined) return Number(f.doubleValue);
+    if(f.booleanValue   !== undefined) return f.booleanValue;
+    if(f.timestampValue !== undefined) return Date.parse(f.timestampValue);
+    return undefined;
+  },
+  toDoc: function(obj){
+    var fields = {};
+    for(var k in obj) fields[k] = this.toVal(obj[k]);
+    return { fields: fields };
+  },
+  fromDoc: function(doc){
+    var o = {}, f = (doc && doc.fields) || {};
+    for(var k in f) o[k] = this.fromVal(f[k]);
+    return o;
+  },
+
+  /* ---- transport -------------------------------------------------------- */
+  http: function(url, opts){
+    var o = opts || {}, timer = 0;
+    if(typeof AbortController === "function"){
+      var ctl = new AbortController();
+      o.signal = ctl.signal;
+      timer = setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, LEADERBOARD.timeoutMs);
+    }
+    return fetch(url, o).then(function(r){
+      if(timer) clearTimeout(timer);
+      return r.text().then(function(t){
+        var body = null;
+        try { body = t ? JSON.parse(t) : null; } catch(e){}
+        if(!r.ok){
+          var msg = (body && body.error && (body.error.message || body.error.status)) || ("HTTP " + r.status);
+          var err = new Error(msg); err.status = r.status; throw err;
+        }
+        return body;
+      });
+    });
+  },
+
+  /* ---- anonymous auth ---------------------------------------------------
+     No account is created just to read the board. One is created the first
+     time a nickname is claimed, and then reused forever via its refresh
+     token, so a device keeps its identity and its row. */
+  loadAuth: function(){
+    try {
+      var raw = localStorage.getItem(this.AUTH_KEY);
+      if(raw){
+        var a = JSON.parse(raw);
+        if(a && a.refreshToken && a.uid){ this.auth = a; this.auth.expires = 0; }
+      }
+    } catch(e){}
+  },
+  saveAuth: function(){
+    try {
+      localStorage.setItem(this.AUTH_KEY, JSON.stringify({
+        uid: this.auth.uid, refreshToken: this.auth.refreshToken
+      }));
+    } catch(e){}
+  },
+
+  ensureAuth: function(){
+    var self = this;
+    if(!this.configured()) return Promise.reject(new Error("not configured"));
+    if(this.auth && this.auth.idToken && Date.now() < this.auth.expires - 60000)
+      return Promise.resolve(this.auth);
+
+    if(this.auth && this.auth.refreshToken){
+      return this.http("https://securetoken.googleapis.com/v1/token?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(this.auth.refreshToken)
+      }).then(function(d){
+        self.auth = { uid: d.user_id, idToken: d.id_token, refreshToken: d.refresh_token,
+                      expires: Date.now() + (Number(d.expires_in||3600) * 1000) };
+        self.saveAuth();
+        return self.auth;
+      }).catch(function(){                   // stale refresh token: start over
+        self.auth = null;
+        return self.signUp();
+      });
+    }
+    return this.signUp();
+  },
+
+  signUp: function(){
+    var self = this;
+    return this.http("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ returnSecureToken: true })
+    }).then(function(d){
+      self.auth = { uid: d.localId, idToken: d.idToken, refreshToken: d.refreshToken,
+                    expires: Date.now() + (Number(d.expiresIn||3600) * 1000) };
+      self.saveAuth();
+      return self.auth;
+    });
+  },
+
+  /* ---- nickname ---------------------------------------------------------- */
+  normName: function(n){ return (n || "").normalize("NFC").trim().replace(/\s+/g, " "); },
+  validate: function(n){
+    var v = this.normName(n);
+    if(v.length < LEADERBOARD.nameMin || v.length > LEADERBOARD.nameMax) return "Name must be " + LEADERBOARD.nameMin + "-" + LEADERBOARD.nameMax + " characters";
+    if(!/^[\p{L}\p{N} _.\-]+$/u.test(v) || !/[\p{L}\p{N}]/u.test(v)) return "Letters, numbers, space, . _ - only";
+    return null;
+  },
+
+  /* Restores the nickname this device already owns, if any. */
+  restoreName: function(){
+    var self = this;
+    this.name = Save.data.playerName || null;
+    if(!this.configured() || !this.auth || !this.auth.uid) return;
+    this.ensureAuth().then(function(a){
+      return self.http(self.docBase() + "/players/" + encodeURIComponent(a.uid) +
+                       "?key=" + encodeURIComponent(LEADERBOARD.apiKey),
+                       { headers: { "authorization": "Bearer " + a.idToken } });
+    }).then(function(doc){
+      var o = self.fromDoc(doc);
+      if(o.name){
+        self.name = o.name; Save.data.playerName = o.name; Save.flush();
+        self.adoptLocal();
+        self.scheduleFlush(true);
+      }
+    }).catch(function(){ /* offline: keep the cached name */ });
+  },
+
+  /* Claims a free nickname. names/{key} and players/{uid} are written in one
+     commit because the players rule checks the names document with getAfter,
+     which only sees writes from the same transaction. */
+  claim: function(rawName){
+    var self = this;
+    var err = this.validate(rawName);
+    if(err) return Promise.reject(new Error(err));
+    var name = this.normName(rawName), key = name.toLowerCase();
+
+    if(!this.configured()){                       // local mode: just take it
+      this.name = name;
+      Save.data.playerName = name; Save.flush();
+      this.adoptLocal();
+      this.scheduleFlush(true);
+      return Promise.resolve(name);
+    }
+
+    return this.ensureAuth().then(function(a){
+      var hdr = { "authorization": "Bearer " + a.idToken, "content-type": "application/json" };
+      return self.http(self.docBase() + "/names/" + encodeURIComponent(key) +
+                       "?key=" + encodeURIComponent(LEADERBOARD.apiKey), { headers: hdr })
+        .then(function(doc){                      // exists - ours or someone else's?
+          var o = self.fromDoc(doc);
+          if(o.uid && o.uid !== a.uid) throw new Error("That name is taken");
+          return "own";
+        })
+        .catch(function(e){
+          if(e.message === "That name is taken") throw e;
+          if(e.status === 404) return "free";
+          throw e;
+        })
+        .then(function(state){
+          if(state === "own"){ return null; }     // already ours, nothing to write
+          var base = "projects/" + LEADERBOARD.projectId + "/databases/(default)/documents";
+          var nameDoc   = self.toDoc({ uid: a.uid, name: name });
+          var playerDoc = self.toDoc({ name: name, created: Date.now() });
+          nameDoc.name   = base + "/names/" + key;
+          playerDoc.name = base + "/players/" + a.uid;
+          return self.http(self.docBase() + ":commit?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+            method: "POST", headers: hdr,
+            body: JSON.stringify({ writes: [ { update: nameDoc }, { update: playerDoc } ] })
+          });
+        })
+        .then(function(){
+          self.name = name;
+          Save.data.playerName = name; Save.flush();
+          self.adoptLocal();             // history moves onto the Firebase uid
+          self.scheduleFlush(true);      // everything queued so far now has an owner
+          return name;
+        });
+    });
+  },
+
+  /* ---- ordering and the local mirror ------------------------------------- */
+  sort: function(list){
+    return list.sort(function(a,b){
+      return (b.pct - a.pct) || (b.coins - a.coins) ||
+             (a.attempts - b.attempts) || (a.at - b.at);
+    });
+  },
+  localAll: function(){
+    try { return JSON.parse(localStorage.getItem(this.KEY) || "{}"); } catch(e){ return {}; }
+  },
+  localRows: function(levelId){
+    return this.sort((this.localAll()[levelId] || []).slice());
+  },
+  localAdd: function(levelId, entry){
+    var all = this.localAll(), list = all[levelId] || [], at = -1;
+    for(var i=0;i<list.length;i++) if(list[i].id === entry.id) at = i;
+    if(at >= 0){
+      // Mirrors the server rule: forward on percent, or forward on attempts at
+      // the same percent. Comparing percent alone would freeze the try counter
+      // the moment a personal best stopped improving, which is most of the time.
+      var cur = list[at];
+      if(cur.pct > entry.pct) return;
+      if(cur.pct === entry.pct && (cur.attempts || 0) >= entry.attempts) return;
+      list[at] = entry;
+    }
+    else list.push(entry);
+    all[levelId] = this.sort(list).slice(0, 50);
+    try { localStorage.setItem(this.KEY, JSON.stringify(all)); } catch(e){}
+  },
+
+  /* ---- reading the board -------------------------------------------------
+     Ordered on pct alone: a single-field sort uses Firestore's automatic
+     index, so there is no composite index to create during setup. The
+     remaining tie-breaks are applied here. */
+  load: function(levelId){
+    var self = this;
+    self.rows[levelId] = self.localRows(levelId);
+    if(!self.configured()){ self.status[levelId] = "local"; return; }
+    self.status[levelId] = "loading";
+
+    var query = {
+      structuredQuery: {
+        from: [{ collectionId: "scores" }],
+        orderBy: [{ field: { fieldPath: "pct" }, direction: "DESCENDING" }],
+        limit: LEADERBOARD.topN * 3
+      }
+    };
+    self.http(self.docBase() + "/levels/" + encodeURIComponent(levelId) +
+              ":runQuery?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(query)
+    }).then(function(res){
+      var list = [];
+      (res || []).forEach(function(r){
+        if(!r.document) return;                       // empty results carry only readTime
+        var o = self.fromDoc(r.document);
+        if(typeof o.name === "string" && typeof o.pct === "number"){
+          var path = r.document.name || "";
+          o.id = path.slice(path.lastIndexOf("/") + 1);
+          o.coins = o.coins || 0; o.attempts = o.attempts || 0; o.at = o.at || 0;
+          list.push(o);
+        }
+      });
+      self.rows[levelId] = self.sort(list);
+      self.status[levelId] = "online";
+    }).catch(function(e){
+      self.lastError = e.message || "unreachable";
+      self.status[levelId] = "error";
+    });
+  },
+
+  /* ---- writing a result ---------------------------------------------------
+     Every run is queued into a persisted outbox rather than sent straight out.
+     Three reasons: the player may not have claimed a nickname yet, the network
+     may be down, and a player grinding Impossible dies several times a minute
+     while Firestore bills per write. The outbox survives a reload, so nothing
+     is lost while any of those are true. */
+
+  OUTBOX_KEY: "neon-dash-outbox-v1",
+  outbox: {},        // levelId -> the best result not yet accepted by the server
+  rejects: {},       // levelId -> consecutive 403s, so a transient one is retried
+  flushing: false,   // guards against two flushes racing on the same entry
+  flushTimer: 0,
+  lastFlush: 0,
+  flushDelay: 15000,
+
+  loadOutbox: function(){
+    try { this.outbox = JSON.parse(localStorage.getItem(this.OUTBOX_KEY) || "{}") || {}; }
+    catch(e){ this.outbox = {}; }
+  },
+  saveOutbox: function(){
+    try { localStorage.setItem(this.OUTBOX_KEY, JSON.stringify(this.outbox)); } catch(e){}
+  },
+  queued: function(){ var n = 0; for(var k in this.outbox) n++; return n; },
+
+  /* Runs already played before a nickname existed were stored under the local
+     id and the placeholder name. Once a name is claimed - and once Firebase
+     hands out a uid, which replaces the local id - those rows are re-keyed and
+     renamed so the history belongs to the player rather than being orphaned. */
+  adoptLocal: function(){
+    var all = this.localAll(), me = this.myId(), mine = [Save.data.playerId, me], changed = false;
+    for(var levelId in all){
+      var list = all[levelId], kept = [], best = null;
+      for(var i=0;i<list.length;i++){
+        var r = list[i];
+        if(mine.indexOf(r.id) < 0){ kept.push(r); continue; }
+        if(r.id !== me){ r.id = me; changed = true; }
+        if(this.name && r.name !== this.name){ r.name = this.name; changed = true; }
+        // re-keying can collapse two rows into one; keep the stronger
+        if(!best || r.pct > best.pct ||
+           (r.pct === best.pct && (r.attempts||0) > (best.attempts||0))){
+          if(best) changed = true;
+          best = r;
+        } else changed = true;
+      }
+      if(best) kept.push(best);
+      all[levelId] = this.sort(kept);
+      this.rows[levelId] = all[levelId].slice();
+    }
+    if(changed){ try { localStorage.setItem(this.KEY, JSON.stringify(all)); } catch(e){} }
+  },
+
+  /* Called after every run, finished or failed. The local board updates
+     immediately either way, so the number on screen is always current. */
+  noteRun: function(levelId, pct, coins, attempts){
+    var prev = this.outbox[levelId];
+    var entry = {
+      pct: Math.round(pct * 10000) / 10000,
+      coins: coins | 0,
+      attempts: attempts | 0,
+      at: Date.now()
+    };
+    if(prev){                                   // never queue a regression
+      entry.pct      = Math.max(prev.pct, entry.pct);
+      entry.coins    = Math.max(prev.coins, entry.coins);
+      entry.attempts = Math.max(prev.attempts, entry.attempts);
+    }
+    this.outbox[levelId] = entry;
+    this.saveOutbox();
+
+    this.localAdd(levelId, {
+      id: this.myId(),
+      name: this.name || Save.data.playerName || "YOU",
+      pct: entry.pct, coins: entry.coins, attempts: entry.attempts, at: entry.at
+    });
+    this.rows[levelId] = this.localRows(levelId);
+
+    this.scheduleFlush();
+  },
+
+  /* Completing a level is worth sending at once rather than on the next tick. */
+  record: function(levelId, pct, coins, attempts){
+    this.noteRun(levelId, pct, coins, attempts);
+    this.scheduleFlush(true);
+  },
+
+  scheduleFlush: function(force){
+    var self = this;
+    if(!this.configured() || !this.name) return;      // nothing can be sent yet
+    if(force){
+      if(this.flushTimer){ clearTimeout(this.flushTimer); this.flushTimer = 0; }
+      return this.flush();
+    }
+    if(this.flushTimer) return;
+    var wait = Math.max(0, this.lastFlush + this.flushDelay - Date.now());
+    this.flushTimer = setTimeout(function(){ self.flushTimer = 0; self.flush(); }, wait);
+  },
+
+  flush: function(opts){
+    var self = this, keepalive = !!(opts && opts.keepalive);
+    if(!this.configured() || !this.name) return Promise.resolve();
+    // A scheduled flush and an explicit one can land together; without this the
+    // same entry is sent twice and the loser comes back as a bogus refusal.
+    if(this.flushing) return Promise.resolve();
+    var ids = [];
+    for(var k in this.outbox) ids.push(k);
+    if(!ids.length) return Promise.resolve();
+    this.flushing = true;
+    this.lastFlush = Date.now();
+
+    var done = function(){ self.flushing = false; };
+    return this.ensureAuth().then(function(a){
+      var chain = Promise.resolve();
+      ids.forEach(function(levelId){
+        chain = chain.then(function(){ return self.sendOne(a, levelId, keepalive); });
+      });
+      return chain;
+    }).then(done, function(e){
+      done();
+      self.lastError = e.message || "sync failed";    // queue survives for later
+    });
+  },
+
+  sendOne: function(a, levelId, keepalive){
+    var self = this, entry = this.outbox[levelId];
+    if(!entry) return Promise.resolve();
+
+    var body = this.toDoc({
+      name: this.name, pct: entry.pct, coins: entry.coins,
+      attempts: entry.attempts, at: entry.at
+    });
+    // A field mask keeps PATCH from clearing anything the rules did not see.
+    var mask = ["name","pct","coins","attempts","at"]
+               .map(function(f){ return "updateMask.fieldPaths=" + f; }).join("&");
+    var req = {
+      method: "PATCH",
+      headers: { "authorization": "Bearer " + a.idToken, "content-type": "application/json" },
+      body: JSON.stringify(body)
+    };
+    if(keepalive) req.keepalive = true;
+
+    return this.http(this.docBase() + "/levels/" + encodeURIComponent(levelId) +
+                     "/scores/" + encodeURIComponent(a.uid) +
+                     "?key=" + encodeURIComponent(LEADERBOARD.apiKey) + "&" + mask, req)
+      .then(function(){
+        delete self.outbox[levelId];
+        delete self.rejects[levelId];
+        self.saveOutbox();
+        self.status[levelId] = "online";
+      })
+      .catch(function(e){
+        if(e.status === 403){
+          // Two very different things arrive as 403. Usually it means the stored
+          // row already beats this one and there is nothing to do. But the first
+          // write right after claiming a name can also be refused because the
+          // rules' get() on players/{uid} has not caught up with the commit that
+          // created it. Dropping on the first refusal loses that score, so give
+          // it a couple of retries before believing it.
+          self.rejects[levelId] = (self.rejects[levelId] || 0) + 1;
+          self.lastError = "rules refused (" + self.rejects[levelId] + "/3): " +
+                           (e.message || "not an improvement");
+          if(self.rejects[levelId] >= 3){
+            delete self.outbox[levelId];
+            delete self.rejects[levelId];
+            self.saveOutbox();
+          }
+        } else {
+          self.lastError = e.message || "write failed";
+          self.status[levelId] = "error";             // stays queued
+        }
+      });
+  },
+
+  myId: function(){ return (this.auth && this.auth.uid) || Save.data.playerId; },
+
+  statusLabel: function(levelId){
+    switch(this.status[levelId]){
+      case "online":  return "ONLINE";
+      case "loading": return "SYNCING...";
+      case "error":   return "OFFLINE - SHOWING LOCAL";
+      default:        return this.configured() ? "LOCAL" : "LOCAL ONLY - NO FIREBASE PROJECT CONFIGURED";
+    }
+  },
+
+  init: function(){
+    this.loadAuth();
+    this.loadOutbox();
+    this.restoreName();
+    if(this.name) this.scheduleFlush(true);
+
+    // Last chance to get a queued result out before the tab goes away.
+    var self = this;
+    addEventListener("pagehide", function(){ self.flush({ keepalive: true }); });
+    addEventListener("visibilitychange", function(){
+      if(document.visibilityState === "hidden") self.flush({ keepalive: true });
+    });
+  }
+};
+
+/* --------------------------------------------------------------------------
+   Name entry. The one place a real DOM input earns its keep: on a phone it is
+   what summons the virtual keyboard, which a canvas cannot do. Claiming is now
+   asynchronous and can be refused - the name may already be taken - so the
+   result is surfaced rather than assumed.
+   -------------------------------------------------------------------------- */
+var NameEntry = {
+  el: null, open: false, busy: false, error: "",
+
+  init: function(){
+    this.el = document.getElementById("nameinput");
+    var self = this;
+    if(!this.el) return;
+    this.el.addEventListener("keydown", function(ev){
+      ev.stopPropagation();
+      if(ev.key === "Enter")  self.commit();
+      if(ev.key === "Escape") self.close();
+    });
+  },
+
+  show: function(){
+    if(!this.el) return;
+    this.open = true; this.error = ""; this.busy = false;
+    this.el.value = Leaderboard.name || Save.data.playerName || "";
+    this.el.disabled = false;
+    this.el.classList.add("on");
+    var self = this;
+    setTimeout(function(){ self.el.focus(); self.el.select(); }, 30);
+  },
+
+  commit: function(){
+    if(!this.el || this.busy) return;
+    var wanted = this.el.value;
+    var bad = Leaderboard.validate(wanted);
+    if(bad){ this.error = bad; return; }
+    this.busy = true; this.error = ""; this.el.disabled = true;
+    var self = this;
+    Leaderboard.claim(wanted).then(function(){
+      self.busy = false;
+      self.close();
+      if(Game.level) Leaderboard.load(Game.level.meta.id);
+    }).catch(function(e){
+      self.busy = false;
+      self.el.disabled = false;
+      self.error = e.message || "Could not claim that name";
+      setTimeout(function(){ if(self.open) self.el.focus(); }, 20);
+    });
+  },
+
+  close: function(){
+    this.open = false; this.busy = false;
+    if(this.el){ this.el.disabled = false; this.el.classList.remove("on"); this.el.blur(); }
   }
 };
 
@@ -3158,9 +4499,15 @@ function sceneSelect(g, v, dt){
     UI.idx++;
   }
 
-  var bw = Math.min(W*0.26, 220), bh = Math.max(40, S*0.072);
-  if(btn(g, "BACK", W/2-bw-S*0.012, H*0.86, bw, bh)) Game.scene = "menu";
-  if(btn(g, "EDITOR", W/2+S*0.012, H*0.86, bw, bh, {accent:COLORS.gold})){
+  var bw = Math.min(W*0.20, 200), bh = Math.max(40, S*0.072), bgp = S*0.014;
+  var bx0 = (W - (bw*3 + bgp*2))/2;
+  if(btn(g, "BACK", bx0, H*0.86, bw, bh)) Game.scene = "menu";
+  if(btn(g, "SCORES", bx0+bw+bgp, H*0.86, bw, bh, {accent:COLORS.lime})){
+    Game.scoreLevel = UI.focus >= 0 ? Game.scoreLevel : 0;
+    Leaderboard.load(LEVELS[Game.scoreLevel].meta.id);
+    Game.scene = "scores";
+  }
+  if(btn(g, "EDITOR", bx0+(bw+bgp)*2, H*0.86, bw, bh, {accent:COLORS.gold})){
     Editor.returnScene = "select";
     Editor.open(Editor.draft || null);
   }
@@ -3262,13 +4609,151 @@ function sceneEnd(g, v, dt){
     txt(g, rows[i][1], W*0.5 + S*0.02, y, S*0.032, COLORS.ink, "left");
   }
 
-  var bw = Math.min(W*0.32, 260), bh = Math.max(40, S*0.07);
+  var bw = Math.min(W*0.26, 230), bh = Math.max(40, S*0.07), egp = S*0.012;
   beginUI();
-  if(btn(g, "REPLAY", W/2-bw-S*0.012, H*0.76, bw, bh)){ Game.scene="play"; retry(true); }
-  if(btn(g, Game.editorReturn ? "EDITOR" : "LEVELS", W/2+S*0.012, H*0.76, bw, bh)){
+  if(!Leaderboard.name){
+    if(btn(g, "CLAIM A NAME TO POST YOUR SCORE", W/2-bw*1.5-egp, H*0.68, bw*3+egp*2, bh*0.86,
+           {accent:COLORS.gold})) NameEntry.show();
+  } else {
+    txt(g, "posted as " + Leaderboard.name, W/2, H*0.69, S*0.026,
+        "rgba(246,242,255,.55)", "center", null, "normal");
+  }
+  if(btn(g, "SCORES", W/2-bw*1.5-egp, H*0.76, bw, bh, {accent:COLORS.lime})){
+    Game.scoreLevel = Game.levelIndex;
+    Leaderboard.load(Game.level.meta.id);
+    Game.scene = "scores";
+  }
+  if(btn(g, "REPLAY", W/2-bw*0.5, H*0.76, bw, bh)){ Game.scene="play"; retry(true); }
+  if(btn(g, Game.editorReturn ? "EDITOR" : "LEVELS", W/2+bw*0.5+egp, H*0.76, bw, bh)){
     Sound.stop(); Game.scene = Game.editorReturn ? "editor" : "select"; Game.editorReturn = false;
   }
   endUI();
+}
+
+/* ---- leaderboard ---------------------------------------------------------- */
+function sceneScores(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  var idx = Game.scoreLevel || 0;
+  var L = LEVELS[idx], id = L.meta.id;
+  drawBackground(g, v, L, GameTime, Sound.bass);
+
+  txt(g, "LEADERBOARD", W/2, H*0.085, S*0.055, COLORS.ink, "center", COLORS.cyan);
+
+  /* level tabs */
+  var n = LEVELS.length;
+  var tw = Math.min((W*0.82)/n, 210), th = Math.max(34, S*0.055), gp = S*0.010;
+  var x0 = (W - (tw*n + gp*(n-1)))/2, ty = H*0.155;
+  beginUI();
+  for(var i=0;i<n;i++){
+    var on = (i === idx);
+    if(btn(g, (i+1) + "  " + LEVELS[i].meta.name, x0 + i*(tw+gp), ty, tw, th,
+           { accent: on ? COLORS.gold : COLORS.cyan })){
+      Game.scoreLevel = i;
+      Leaderboard.load(LEVELS[i].meta.id);
+    }
+    if(on){
+      g.fillStyle = COLORS.gold;
+      g.fillRect(x0 + i*(tw+gp) + tw*0.2, ty + th + 4, tw*0.6, 3);
+    }
+  }
+
+  /* where the data came from - never leave that ambiguous */
+  var st = Leaderboard.status[id];
+  txt(g, Leaderboard.statusLabel(id), W/2, ty + th + S*0.048, S*0.022,
+      st === "online" ? COLORS.lime : (st === "error" ? COLORS.magenta : "rgba(246,242,255,.5)"),
+      "center", null, "normal");
+
+  /* rows */
+  var rows = Leaderboard.rows[id] || [];
+  var listW = Math.min(W*0.76, 760), lx = (W-listW)/2;
+  var rowH = Math.max(30, S*0.052), ly = ty + th + S*0.112;
+  var shown = Math.min(rows.length, LEADERBOARD.topN);
+
+  if(!shown){
+    txt(g, "No scores yet.", W/2, ly + rowH*1.5, S*0.034, "rgba(246,242,255,.6)", "center");
+    txt(g, "Finish a run - even a failed one posts your best percent.",
+        W/2, ly + rowH*2.6, S*0.024, "rgba(246,242,255,.4)", "center", null, "normal");
+  }
+
+  // column header, so the numbers are not a guessing game
+  if(shown){
+    var hy = ly - rowH*0.62;
+    txt(g, "PLAYER", lx + S*0.075, hy, S*0.020, "rgba(246,242,255,.40)", "left", null, "normal");
+    txt(g, "TRIES",  lx + listW - S*0.225, hy, S*0.020, "rgba(246,242,255,.40)", "right", null, "normal");
+    txt(g, "COINS",  lx + listW - S*0.155, hy, S*0.020, "rgba(246,242,255,.40)", "center", null, "normal");
+    txt(g, "BEST",   lx + listW - S*0.022, hy, S*0.020, "rgba(246,242,255,.40)", "right", null, "normal");
+  }
+
+  for(var r=0;r<shown;r++){
+    var e = rows[r], y = ly + r*rowH;
+    var mine = (e.id === Leaderboard.myId());
+    if(mine || r%2===0){
+      roundRect(g, lx, y, listW, rowH-4, 6);
+      g.fillStyle = mine ? "rgba(45,226,230,.16)" : "rgba(20,11,46,.5)";
+      g.fill();
+      if(mine){ g.strokeStyle = COLORS.cyan; g.lineWidth = 1.5; g.stroke(); }
+    }
+    var cy = y + (rowH-4)/2;
+    var medal = r===0 ? COLORS.gold : r===1 ? "#cfd8e8" : r===2 ? "#d08b52" : "rgba(246,242,255,.55)";
+    txt(g, String(r+1), lx + S*0.022, cy, S*0.030, medal, "left");
+    txt(g, e.name || "???", lx + S*0.075, cy, S*0.030, mine ? COLORS.ink : "rgba(246,242,255,.86)", "left");
+
+    txt(g, String(e.attempts || 0), lx + listW - S*0.225, cy, S*0.026,
+        "rgba(246,242,255,.66)", "right", null, "normal");
+
+    for(var c=0;c<3;c++){
+      var ccx = lx + listW - S*0.185 + c*S*0.030;
+      g.beginPath(); g.arc(ccx, cy, S*0.011, 0, 6.2832);
+      g.fillStyle = (e.coins > c) ? COLORS.gold : "rgba(246,242,255,.13)";
+      g.fill();
+    }
+    var pctCol = e.pct >= 1 ? COLORS.lime : COLORS.ink;
+    txt(g, (e.pct >= 1 ? "100" : Math.floor(e.pct*100)) + "%", lx + listW - S*0.022, cy,
+        S*0.030, pctCol, "right");
+  }
+
+  /* actions */
+  var bw = Math.min(W*0.26, 230), bh = Math.max(40, S*0.07), gp2 = S*0.014;
+  var byy = H*0.87;
+  if(btn(g, Leaderboard.name ? ("NAME: " + Leaderboard.name) : "CLAIM NAME",
+         W/2 - bw - gp2/2, byy, bw, bh, {accent:COLORS.gold})) NameEntry.show();
+  if(btn(g, "BACK", W/2 + gp2/2, byy, bw, bh)) Game.scene = "select";
+  endUI();
+
+  var q = Leaderboard.queued();
+  if(q){
+    txt(g, q + (q === 1 ? " result" : " results") + " waiting to sync" +
+           (Leaderboard.name ? "" : " - claim a name to post them"),
+        W/2, byy - S*0.03, S*0.022, COLORS.gold, "center", null, "normal");
+  }
+
+  if(!Leaderboard.configured()){
+    txt(g, "Set LEADERBOARD.apiKey and projectId in index.html to share scores online.",
+        W/2, H - S*0.028, S*0.021, "rgba(246,242,255,.34)", "center", null, "normal");
+  }
+}
+
+/* The nickname input is a DOM overlay pinned to the middle of the window, so
+   its status line is drawn on the canvas right underneath it. */
+function drawNameOverlay(g, v){
+  if(!NameEntry.open) return;
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  g.save();
+  g.fillStyle = "rgba(10,5,24,.72)";
+  g.fillRect(0, 0, W, H);
+  txt(g, "CHOOSE YOUR NAME", W/2, H/2 - S*0.12, S*0.038, COLORS.ink, "center", COLORS.cyan);
+  txt(g, Leaderboard.configured() ? "Names are claimed first come, first served."
+                                  : "Stored on this device only.",
+      W/2, H/2 - S*0.075, S*0.024, "rgba(246,242,255,.5)", "center", null, "normal");
+
+  var msg = NameEntry.busy ? "CLAIMING..." : NameEntry.error;
+  if(msg){
+    txt(g, msg, W/2, H/2 + S*0.085, S*0.026,
+        NameEntry.busy ? COLORS.gold : COLORS.magenta, "center");
+  }
+  txt(g, "ENTER to confirm    ESC to cancel", W/2, H/2 + S*0.135, S*0.022,
+      "rgba(246,242,255,.45)", "center", null, "normal");
+  g.restore();
 }
 
 /* ==========================================================================
@@ -3285,7 +4770,7 @@ var EDITOR_PALETTE = [
   "portal-cube","portal-ship","portal-ball","portal-ufo","portal-wave","portal-robot",
   "portal-gravity-up","portal-gravity-down","portal-mini","portal-big",
   "portal-dual","portal-mirror",
-  "speed-slow","speed-normal","speed-fast","speed-faster",
+  "speed-slow","speed-normal","speed-fast","speed-faster","speed-fastest",
   "finish"
 ];
 
@@ -3532,6 +5017,7 @@ var cv, ctx, Game = {
   deadT: 0, bannerT: 0, shakeT: 0, shakeMag: 0,
   hint: "", hintT: 0,
   acc: 0, last: 0,
+  scoreLevel: 0,
   fpsSmooth: 60
 };
 
@@ -3576,9 +5062,17 @@ function togglePractice(){
 function recordProgress(){
   var rec = Save.level(Game.level.meta.id);
   var p = Game.sim.progress;
-  if(Game.practice){ if(p > rec.practiceBest) rec.practiceBest = p; }
-  else if(p > rec.best) rec.best = p;
+  if(Game.practice){
+    if(p > rec.practiceBest) rec.practiceBest = p;
+    Save.flush();
+    return;                       // practice never reaches the board
+  }
+  if(p > rec.best) rec.best = p;
   Save.flush();
+  // Queued after every failed run, not just a new best: on a level nobody has
+  // finished, the attempt count is the number people actually watch.
+  Leaderboard.noteRun(Game.level.meta.id, rec.best,
+                      rec.coins[0]+rec.coins[1]+rec.coins[2], rec.attempts);
 }
 
 function finishLevel(){
@@ -3589,6 +5083,10 @@ function finishLevel(){
     for(var i=0;i<3;i++) if(Game.sim.coins[i]) rec.coins[i] = 1;
   }
   Save.flush();
+  if(!Game.practice){
+    Leaderboard.record(Game.level.meta.id, 1,
+                      rec.coins[0]+rec.coins[1]+rec.coins[2], rec.attempts);
+  }
   Sound.sfx("win");
   Sound.stop();
   Particles.burst(Game.sim.ents[0].x, Game.sim.ents[0].y, COLORS.lime, 60, 520);
@@ -3764,8 +5262,11 @@ function frame(){
     case "play":     scenePlay(ctx, v, dt); break;
     case "pause":    scenePause(ctx, v, dt); break;
     case "end":      sceneEnd(ctx, v, dt); break;
+    case "scores":   sceneScores(ctx, v, dt); break;
     case "editor":   sceneEditor(ctx, v, dt); break;
   }
+
+  drawNameOverlay(ctx, v);
 }
 
 function boot(){
@@ -3786,12 +5287,22 @@ function boot(){
   Input.init(cv);
   Input.applyBinds();
   Editor.init();
+  NameEntry.init();
+  Leaderboard.init();
+  Leaderboard.load(LEVELS[0].meta.id);
 
   // WebAudio may only start from a gesture, so try on every early interaction.
   function unlock(){ Sound.init(); Sound.resume(); Sound.applyVolumes(); }
   addEventListener("pointerdown", unlock);
   addEventListener("keydown", unlock);
   addEventListener("touchstart", unlock);
+
+  // Prompt for a nickname on entry so scores have an owner from the first run.
+  // Skippable with Escape; anything played before it is claimed is queued and
+  // sent the moment a name exists.
+  if(!Save.data.playerName){
+    setTimeout(function(){ if(!Leaderboard.name) NameEntry.show(); }, 800);
+  }
 
   Game.level = LEVELS[0];
   Game.sim = createSim(Game.level);

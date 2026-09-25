@@ -13,7 +13,7 @@ var EDITOR_PALETTE = [
   "portal-cube","portal-ship","portal-ball","portal-ufo","portal-wave","portal-robot",
   "portal-gravity-up","portal-gravity-down","portal-mini","portal-big",
   "portal-dual","portal-mirror",
-  "speed-slow","speed-normal","speed-fast","speed-faster",
+  "speed-slow","speed-normal","speed-fast","speed-faster","speed-fastest",
   "finish"
 ];
 

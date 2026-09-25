@@ -465,6 +465,170 @@ function level3(){
   return L;
 }
 
+/* ======================================================================== *
+   LEVEL 4 - Impossible         180 BPM, demon
+
+   At 180 BPM a beat is 0.333s while a cube jump is airborne for 0.4336s, so
+   a jump spans 1.3 beats and ground obstacles can never sit closer than about
+   1.5 beats apart. The difficulty here is not tighter geometry - that would
+   just be unbeatable - it is the rate of decisions: every section switches
+   form, most windows are a handful of frames wide, and two of the corridors
+   run at the top speed multiplier.
+ * ======================================================================== */
+function level4(){
+  const L = Builder({
+    id:"level-04", name:"Impossible", difficulty:"demon", bpm:180,
+    music:"assets/audio/level-04.mp3", musicOffsetMs:0,
+    startMode:"cube", startSpeed:1.502, bgColor:"#240733", groundColor:"#4a0f4f", hue:330
+  });
+  L.setSpeed(1.502);
+
+  /* A - cold open, no runway to speak of */
+  [4, 5.5, 7, 8.5].forEach(n=>{ L.b=n; P.spike(L, L.x()); });
+  L.b = 10;   P.spike(L, L.x()); P.spike(L, L.x()+1);
+  L.b = 12;   P.plat(L, L.x(), 6, 1);
+  L.b = 14;   P.triple(L, L.x());
+  L.b = 16;   P.spike(L, L.x()); P.spike(L, L.x()+1);
+  L.b = 17.5; P.saw(L, L.x(), 0);
+
+  /* B - three-orb chain, nothing but hazard underneath */
+  L.b = 19.5;
+  const ch1 = P.orbChain(L, L.x(), ["orb-yellow","orb-yellow","orb-pink"]);
+  // The field has to start after the launch point - a spike on the takeoff
+  // block kills before the chain begins - and end before the chain lands.
+  for(let i=0;i<14;i++) if(i%4!==3) P.spike(L, Math.round(ch1.objs[0].x)-1+i, 0);
+  L.put("coin", Math.round(ch1.apexX), Math.round(ch1.topY-0.5));
+  L.b = 25.5; P.spike(L, L.x());
+  L.b = 27;   P.spike(L, L.x()); P.spike(L, L.x()+1);
+
+  /* C - mini cube under a three-block roof */
+  L.b = 29; L.put("portal-mini", L.x(), 0);
+  L.b = 30.5;
+  const m0 = L.x(), mlen = Math.round(10*L.beat);
+  P.roof(L, m0, mlen, 3);
+  for(let i=0;i<9;i++){
+    const x = m0 + 9 + i*9;
+    if(x > m0+mlen-5) break;
+    P.spike(L, x); P.spike(L, x+1);
+  }
+  L.b = 41; L.put("portal-big", L.x(), 0);
+
+  /* D - wave at the top speed multiplier, two-block lane */
+  L.b = 43; L.put("speed-fastest", L.x(), 0); L.setSpeed(1.849);
+  L.b = 44.5;
+  const w0 = L.x(), wlen = Math.round(17*L.beat);
+  L.put("portal-wave", w0, 0);
+  P.roof(L, w0+3, wlen, 5);
+  for(let i=0;i<26;i++){
+    const x = w0+13 + i*6;
+    if(x > w0+3+wlen-6) break;
+    if(i%2===0){ P.block(L,x,0); P.block(L,x,1); P.spike(L,x,2); }
+    else       { P.block(L,x,4); P.block(L,x,3); P.spike(L,x,2,180); }
+  }
+  L.put("portal-mini", w0+3+Math.round(wlen*0.44), 2);
+  L.put("portal-big",  w0+3+Math.round(wlen*0.81), 2);
+  L.b = 62; L.put("portal-cube", L.x(), 0);
+
+  /* E - ship squeeze */
+  L.b = 64; L.put("speed-faster", L.x(), 0); L.setSpeed(1.502);
+  L.b = 65.5;
+  const s0 = L.x(), slen = Math.round(16*L.beat);
+  L.put("portal-ship", s0, 0);
+  P.roof(L, s0+3, slen, 5);
+  for(let i=0;i<14;i++){
+    const x = s0+15 + i*8;
+    if(x > s0+3+slen-7) break;
+    if(i%2===0){ P.block(L,x,0); P.block(L,x,1); P.spike(L,x,2); }
+    else       { P.block(L,x,4); P.block(L,x,3); P.spike(L,x,2,180); }
+  }
+  L.put("coin", s0+3+Math.round(slen*0.30), 4);
+  L.b = 82; L.put("portal-cube", L.x(), 0);
+
+  /* F - ball, four-block tunnel, flips only on contact */
+  L.b = 84;
+  const b0 = L.x(), blen = Math.round(12*L.beat);
+  L.put("portal-ball", b0, 0);
+  P.roof(L, b0+4, blen, 4);
+  for(let i=0;i<10;i++){
+    const x = b0+15 + i*10;
+    if(x > b0+4+blen-7) break;
+    if(i%2===0){ P.spike(L,x,0); P.spike(L,x+1,0); }
+    else       { P.spike(L,x,3,180); P.spike(L,x+1,3,180); }
+  }
+  L.put("coin", b0+4+Math.round(blen*0.52), 2);
+  L.b = 97; L.put("portal-cube", L.x(), 0);
+
+  /* G - ufo */
+  L.b = 99;
+  const u0 = L.x(), ulen = Math.round(13*L.beat);
+  L.put("portal-ufo", u0, 0);
+  P.roof(L, u0+3, ulen, 6);
+  for(let i=0;i<12;i++){
+    const x = u0+14 + i*8;
+    if(x > u0+3+ulen-7) break;
+    const h = 2 + (i%3===2 ? 1 : 0);
+    if(i%2===0){ for(let j=0;j<h;j++) P.block(L,x,j); P.spike(L,x,h); }
+    else       { for(let j=0;j<h;j++) P.block(L,x,5-j); P.spike(L,x,5-h,180); }
+  }
+  L.b = 113; L.put("portal-cube", L.x(), 0);
+
+  /* H - dual: both cubes share one button and both have to survive */
+  L.b = 115; L.put("portal-dual", L.x(), 0);
+  const d0 = L.x(), dlen = Math.round(13*L.beat);
+  P.roof(L, d0+2, dlen, 12);
+  for(let k=0;k<8;k++){
+    L.b = 116.5 + k*1.5;
+    const x = L.x();
+    P.spike(L, x, 0);
+    P.spike(L, x, 11, 180);
+  }
+  L.b = 129; L.put("portal-dual", L.x(), 0);
+
+  /* I - mirror, then a dash orb across the whole field */
+  L.b = 131;   L.put("portal-mirror", L.x(), 0);
+  L.b = 133;   P.spike(L, L.x());
+  L.b = 134.5; P.spike(L, L.x()); P.spike(L, L.x()+1);
+  L.b = 136.5; P.triple(L, L.x());
+  L.b = 138.5; L.put("portal-mirror", L.x(), 0);
+  L.b = 140.5;
+  const dc = P.orbChain(L, L.x(), ["orb-dash"]);
+  for(let i=0;i<14;i++) P.spike(L, Math.round(dc.objs[0].x)+2+i, 0);
+  L.b = 146; P.saw(L, L.x(), 1);
+
+  /* J - robot stairs */
+  L.b = 148; L.put("portal-robot", L.x(), 0);
+  L.b = 150;   P.plat(L, L.x(), 6, 2);
+  L.b = 152.5; P.spike(L, L.x()); P.spike(L, L.x()+1);
+  L.b = 154.5; P.plat(L, L.x(), 6, 2);
+  L.b = 157;   P.triple(L, L.x());
+  L.b = 159;   L.put("portal-cube", L.x(), 0);
+
+  /* K - finale, top speed the rest of the way */
+  L.b = 161; L.put("speed-fastest", L.x(), 0); L.setSpeed(1.849);
+  L.b = 162.5; P.spike(L, L.x());
+  L.b = 164;   P.spike(L, L.x()); P.spike(L, L.x()+1);
+  L.b = 166;
+  const pf = L.x(); L.put("pad-red", pf, 0); P.cleared(L, pf-0.425, 4.5, 6);
+  L.b = 169;   P.saw(L, L.x(), 1);
+  L.b = 171;   P.triple(L, L.x());
+  L.b = 173;   P.spike(L, L.x()); P.spike(L, L.x()+1);
+  L.b = 175;   P.plat(L, L.x(), 6, 1);
+  L.b = 177.5; P.triple(L, L.x());
+  L.b = 180;   P.spike(L, L.x());
+  L.b = 182;   P.spike(L, L.x()); P.spike(L, L.x()+1);
+  L.b = 184;
+  const oc4 = P.orbChain(L, L.x(), ["orb-yellow","orb-red"]);
+  for(let i=0;i<12;i++) if(i%4!==3) P.spike(L, Math.round(oc4.objs[0].x)-3+i, 0);
+  L.b = 189;   P.spike(L, L.x());
+  L.b = 191;   P.triple(L, L.x());
+  L.b = 193.5; P.spike(L, L.x()); P.spike(L, L.x()+1);
+
+  L.b = 197;
+  L.put("finish", L.x(), 0);
+  L.meta.lengthBlocks = L.x();
+  return L;
+}
+
 /* ---- sanity pass: no run of ground hazards a cube jump cannot cross ------ */
 function audit(name, objs){
   const ground = new Set();
@@ -496,7 +660,7 @@ function audit(name, objs){
 
 /* ------------------------------------------------------------------------- */
 function emit(){
-  const levels = [level1(), level2(), level3()];
+  const levels = [level1(), level2(), level3(), level4()];
   const out = levels.map(L=>{
     const seen = new Set(), objs = [];
     for(const o of L.objs.slice().sort((a,b)=>a.x-b.x || a.y-b.y)){

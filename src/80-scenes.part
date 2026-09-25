@@ -156,9 +156,15 @@ function sceneSelect(g, v, dt){
     UI.idx++;
   }
 
-  var bw = Math.min(W*0.26, 220), bh = Math.max(40, S*0.072);
-  if(btn(g, "BACK", W/2-bw-S*0.012, H*0.86, bw, bh)) Game.scene = "menu";
-  if(btn(g, "EDITOR", W/2+S*0.012, H*0.86, bw, bh, {accent:COLORS.gold})){
+  var bw = Math.min(W*0.20, 200), bh = Math.max(40, S*0.072), bgp = S*0.014;
+  var bx0 = (W - (bw*3 + bgp*2))/2;
+  if(btn(g, "BACK", bx0, H*0.86, bw, bh)) Game.scene = "menu";
+  if(btn(g, "SCORES", bx0+bw+bgp, H*0.86, bw, bh, {accent:COLORS.lime})){
+    Game.scoreLevel = UI.focus >= 0 ? Game.scoreLevel : 0;
+    Leaderboard.load(LEVELS[Game.scoreLevel].meta.id);
+    Game.scene = "scores";
+  }
+  if(btn(g, "EDITOR", bx0+(bw+bgp)*2, H*0.86, bw, bh, {accent:COLORS.gold})){
     Editor.returnScene = "select";
     Editor.open(Editor.draft || null);
   }
@@ -260,11 +266,149 @@ function sceneEnd(g, v, dt){
     txt(g, rows[i][1], W*0.5 + S*0.02, y, S*0.032, COLORS.ink, "left");
   }
 
-  var bw = Math.min(W*0.32, 260), bh = Math.max(40, S*0.07);
+  var bw = Math.min(W*0.26, 230), bh = Math.max(40, S*0.07), egp = S*0.012;
   beginUI();
-  if(btn(g, "REPLAY", W/2-bw-S*0.012, H*0.76, bw, bh)){ Game.scene="play"; retry(true); }
-  if(btn(g, Game.editorReturn ? "EDITOR" : "LEVELS", W/2+S*0.012, H*0.76, bw, bh)){
+  if(!Leaderboard.name){
+    if(btn(g, "CLAIM A NAME TO POST YOUR SCORE", W/2-bw*1.5-egp, H*0.68, bw*3+egp*2, bh*0.86,
+           {accent:COLORS.gold})) NameEntry.show();
+  } else {
+    txt(g, "posted as " + Leaderboard.name, W/2, H*0.69, S*0.026,
+        "rgba(246,242,255,.55)", "center", null, "normal");
+  }
+  if(btn(g, "SCORES", W/2-bw*1.5-egp, H*0.76, bw, bh, {accent:COLORS.lime})){
+    Game.scoreLevel = Game.levelIndex;
+    Leaderboard.load(Game.level.meta.id);
+    Game.scene = "scores";
+  }
+  if(btn(g, "REPLAY", W/2-bw*0.5, H*0.76, bw, bh)){ Game.scene="play"; retry(true); }
+  if(btn(g, Game.editorReturn ? "EDITOR" : "LEVELS", W/2+bw*0.5+egp, H*0.76, bw, bh)){
     Sound.stop(); Game.scene = Game.editorReturn ? "editor" : "select"; Game.editorReturn = false;
   }
   endUI();
+}
+
+/* ---- leaderboard ---------------------------------------------------------- */
+function sceneScores(g, v, dt){
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  var idx = Game.scoreLevel || 0;
+  var L = LEVELS[idx], id = L.meta.id;
+  drawBackground(g, v, L, GameTime, Sound.bass);
+
+  txt(g, "LEADERBOARD", W/2, H*0.085, S*0.055, COLORS.ink, "center", COLORS.cyan);
+
+  /* level tabs */
+  var n = LEVELS.length;
+  var tw = Math.min((W*0.82)/n, 210), th = Math.max(34, S*0.055), gp = S*0.010;
+  var x0 = (W - (tw*n + gp*(n-1)))/2, ty = H*0.155;
+  beginUI();
+  for(var i=0;i<n;i++){
+    var on = (i === idx);
+    if(btn(g, (i+1) + "  " + LEVELS[i].meta.name, x0 + i*(tw+gp), ty, tw, th,
+           { accent: on ? COLORS.gold : COLORS.cyan })){
+      Game.scoreLevel = i;
+      Leaderboard.load(LEVELS[i].meta.id);
+    }
+    if(on){
+      g.fillStyle = COLORS.gold;
+      g.fillRect(x0 + i*(tw+gp) + tw*0.2, ty + th + 4, tw*0.6, 3);
+    }
+  }
+
+  /* where the data came from - never leave that ambiguous */
+  var st = Leaderboard.status[id];
+  txt(g, Leaderboard.statusLabel(id), W/2, ty + th + S*0.048, S*0.022,
+      st === "online" ? COLORS.lime : (st === "error" ? COLORS.magenta : "rgba(246,242,255,.5)"),
+      "center", null, "normal");
+
+  /* rows */
+  var rows = Leaderboard.rows[id] || [];
+  var listW = Math.min(W*0.76, 760), lx = (W-listW)/2;
+  var rowH = Math.max(30, S*0.052), ly = ty + th + S*0.112;
+  var shown = Math.min(rows.length, LEADERBOARD.topN);
+
+  if(!shown){
+    txt(g, "No scores yet.", W/2, ly + rowH*1.5, S*0.034, "rgba(246,242,255,.6)", "center");
+    txt(g, "Finish a run - even a failed one posts your best percent.",
+        W/2, ly + rowH*2.6, S*0.024, "rgba(246,242,255,.4)", "center", null, "normal");
+  }
+
+  // column header, so the numbers are not a guessing game
+  if(shown){
+    var hy = ly - rowH*0.62;
+    txt(g, "PLAYER", lx + S*0.075, hy, S*0.020, "rgba(246,242,255,.40)", "left", null, "normal");
+    txt(g, "TRIES",  lx + listW - S*0.225, hy, S*0.020, "rgba(246,242,255,.40)", "right", null, "normal");
+    txt(g, "COINS",  lx + listW - S*0.155, hy, S*0.020, "rgba(246,242,255,.40)", "center", null, "normal");
+    txt(g, "BEST",   lx + listW - S*0.022, hy, S*0.020, "rgba(246,242,255,.40)", "right", null, "normal");
+  }
+
+  for(var r=0;r<shown;r++){
+    var e = rows[r], y = ly + r*rowH;
+    var mine = (e.id === Leaderboard.myId());
+    if(mine || r%2===0){
+      roundRect(g, lx, y, listW, rowH-4, 6);
+      g.fillStyle = mine ? "rgba(45,226,230,.16)" : "rgba(20,11,46,.5)";
+      g.fill();
+      if(mine){ g.strokeStyle = COLORS.cyan; g.lineWidth = 1.5; g.stroke(); }
+    }
+    var cy = y + (rowH-4)/2;
+    var medal = r===0 ? COLORS.gold : r===1 ? "#cfd8e8" : r===2 ? "#d08b52" : "rgba(246,242,255,.55)";
+    txt(g, String(r+1), lx + S*0.022, cy, S*0.030, medal, "left");
+    txt(g, e.name || "???", lx + S*0.075, cy, S*0.030, mine ? COLORS.ink : "rgba(246,242,255,.86)", "left");
+
+    txt(g, String(e.attempts || 0), lx + listW - S*0.225, cy, S*0.026,
+        "rgba(246,242,255,.66)", "right", null, "normal");
+
+    for(var c=0;c<3;c++){
+      var ccx = lx + listW - S*0.185 + c*S*0.030;
+      g.beginPath(); g.arc(ccx, cy, S*0.011, 0, 6.2832);
+      g.fillStyle = (e.coins > c) ? COLORS.gold : "rgba(246,242,255,.13)";
+      g.fill();
+    }
+    var pctCol = e.pct >= 1 ? COLORS.lime : COLORS.ink;
+    txt(g, (e.pct >= 1 ? "100" : Math.floor(e.pct*100)) + "%", lx + listW - S*0.022, cy,
+        S*0.030, pctCol, "right");
+  }
+
+  /* actions */
+  var bw = Math.min(W*0.26, 230), bh = Math.max(40, S*0.07), gp2 = S*0.014;
+  var byy = H*0.87;
+  if(btn(g, Leaderboard.name ? ("NAME: " + Leaderboard.name) : "CLAIM NAME",
+         W/2 - bw - gp2/2, byy, bw, bh, {accent:COLORS.gold})) NameEntry.show();
+  if(btn(g, "BACK", W/2 + gp2/2, byy, bw, bh)) Game.scene = "select";
+  endUI();
+
+  var q = Leaderboard.queued();
+  if(q){
+    txt(g, q + (q === 1 ? " result" : " results") + " waiting to sync" +
+           (Leaderboard.name ? "" : " - claim a name to post them"),
+        W/2, byy - S*0.03, S*0.022, COLORS.gold, "center", null, "normal");
+  }
+
+  if(!Leaderboard.configured()){
+    txt(g, "Set LEADERBOARD.apiKey and projectId in index.html to share scores online.",
+        W/2, H - S*0.028, S*0.021, "rgba(246,242,255,.34)", "center", null, "normal");
+  }
+}
+
+/* The nickname input is a DOM overlay pinned to the middle of the window, so
+   its status line is drawn on the canvas right underneath it. */
+function drawNameOverlay(g, v){
+  if(!NameEntry.open) return;
+  var W = v.w, H = v.h, S = Math.min(W,H);
+  g.save();
+  g.fillStyle = "rgba(10,5,24,.72)";
+  g.fillRect(0, 0, W, H);
+  txt(g, "CHOOSE YOUR NAME", W/2, H/2 - S*0.12, S*0.038, COLORS.ink, "center", COLORS.cyan);
+  txt(g, Leaderboard.configured() ? "Names are claimed first come, first served."
+                                  : "Stored on this device only.",
+      W/2, H/2 - S*0.075, S*0.024, "rgba(246,242,255,.5)", "center", null, "normal");
+
+  var msg = NameEntry.busy ? "CLAIMING..." : NameEntry.error;
+  if(msg){
+    txt(g, msg, W/2, H/2 + S*0.085, S*0.026,
+        NameEntry.busy ? COLORS.gold : COLORS.magenta, "center");
+  }
+  txt(g, "ENTER to confirm    ESC to cancel", W/2, H/2 + S*0.135, S*0.022,
+      "rgba(246,242,255,.45)", "center", null, "normal");
+  g.restore();
 }

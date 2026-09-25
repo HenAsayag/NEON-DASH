@@ -57,10 +57,21 @@ that needs redesigning. It found four real design bugs during development:
 `tools/at.js <level> <block>` prints what is at a given block, for diagnosing a
 stall. `tools/serve.js <dir> <port>` is a static server for local testing.
 
+## Leaderboard
+
+Off by default and local-only. See FIREBASE.md to connect Cloud Firestore.
+
+Same data and security model as the pitzi-roll board - anonymous auth, a
+first-come-first-served nickname registry, one score row per player per level
+that can only improve - but driven over the Firestore REST API with plain
+fetch() rather than the CDN SDK, so the single-file, runs-from-file:// property
+is preserved.
+
 ## Current state
 
 ```
-PASS  First Light (easy)      beaten in 48.7s, 3/3 coins, 274 objects, 506 blocks
-PASS  Static Bloom (normal)   beaten in 46.9s, 3/3 coins, 330 objects, 636 blocks
-PASS  Overdrive (hard)        beaten in 52.6s, 3/3 coins, 407 objects, 757 blocks
+PASS  First Light (easy)      beaten in 48.7s, 3/3 coins,  274 objects,  506 blocks
+PASS  Static Bloom (normal)   beaten in 46.9s, 3/3 coins,  330 objects,  636 blocks
+PASS  Overdrive (hard)        beaten in 52.6s, 3/3 coins,  407 objects,  757 blocks
+PASS  Impossible (demon)      beaten in 59.5s, 3/3 coins,  720 objects, 1092 blocks
 ```

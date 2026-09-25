@@ -31,12 +31,25 @@
     box-shadow:0 0 60px rgba(45,226,230,.35)
   }
   #io.on{display:block}
+  /* Name entry for the leaderboard. A real input, because only a real input
+     raises the virtual keyboard on a phone. */
+  #nameinput{
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    display:none;z-index:60;width:min(420px,84vw);
+    background:#12082a;color:#F6F2FF;border:2px solid #2DE2E6;border-radius:10px;
+    padding:16px 18px;font:700 26px "Trebuchet MS",system-ui,sans-serif;
+    letter-spacing:.12em;text-align:center;text-transform:uppercase;outline:none;
+    box-shadow:0 0 60px rgba(45,226,230,.45)
+  }
+  #nameinput.on{display:block}
+  #nameinput::placeholder{color:rgba(246,242,255,.32);letter-spacing:.12em}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="game"></canvas></div>
 <div id="rotate"><div><b>NEON DASH</b>Rotate your device to landscape</div></div>
 <textarea id="io" spellcheck="false"></textarea>
+<input id="nameinput" maxlength="14" spellcheck="false" autocomplete="off" placeholder="YOUR NAME">
 <script>
 "use strict";
 /* ==========================================================================

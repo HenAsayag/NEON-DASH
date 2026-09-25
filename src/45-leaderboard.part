@@ -1,0 +1,581 @@
+
+/* ==========================================================================
+   Leaderboard - Cloud Firestore + Firebase Anonymous Auth, over REST.
+
+   Same backend and same security model as the pitzi-roll board: every device
+   signs in anonymously, claims one nickname first-come-first-served, and owns
+   exactly one score document per level which can only ever improve.
+
+       names/{lowercased name}      { uid, name }
+       players/{uid}                { name, created }
+       levels/{levelId}/scores/{uid}  { name, pct, coins, attempts, at }
+
+   The difference is the transport. pitzi-roll imports the Firebase SDK from
+   gstatic; this game cannot, because it ships as one HTML file with no
+   dependencies that has to run from a double click. So auth and Firestore are
+   both driven by plain fetch() against their REST endpoints:
+
+       accounts:signUp        anonymous account, returns idToken + uid
+       securetoken/token      refresh when the hour-long idToken expires
+       documents:runQuery     top N by pct
+       documents:commit       atomic two-document nickname claim
+       documents/...  PATCH   write my own score
+
+   The security rules are unchanged by this - request.auth.uid is populated
+   exactly the same way from a Bearer token as it is from the SDK.
+
+   With no apiKey/projectId configured, or if anything above fails, the whole
+   interface is served from localStorage instead. The board always works; being
+   online only changes whose scores you can see.
+
+   Setup lives in FIREBASE.md.
+   ========================================================================== */
+
+var LEADERBOARD = {
+  // Firebase project "neon-dash-41850". These two are public identifiers, not
+  // secrets - firestore.rules is what enforces access. The REST endpoints need
+  // only these; authDomain, appId and the rest of the web config are SDK-only,
+  // and Analytics is not used because it cannot run without the SDK.
+  apiKey:    "AIzaSyCWXJZoJxtxn_IN7qCuLLoc3-awnPKFfhM",
+  projectId: "neon-dash-41850",
+  topN: 10,
+  timeoutMs: 8000,
+  nameMin: 2,
+  nameMax: 14
+};
+
+var Leaderboard = {
+  KEY:      "neon-dash-scores-v1",
+  AUTH_KEY: "neon-dash-auth-v1",
+
+  rows: {},        // levelId -> sorted entries
+  status: {},      // levelId -> "local" | "loading" | "online" | "error"
+  auth: null,      // { uid, idToken, refreshToken, expires }
+  name: null,      // the nickname this device owns
+  lastError: "",
+
+  configured: function(){ return !!(LEADERBOARD.apiKey && LEADERBOARD.projectId); },
+  online: function(){ return this.configured(); },
+
+  docBase: function(){
+    return "https://firestore.googleapis.com/v1/projects/" +
+           encodeURIComponent(LEADERBOARD.projectId) + "/databases/(default)/documents";
+  },
+
+  /* ---- Firestore value marshalling ------------------------------------
+     Firestore wraps every scalar in its type, so both directions need a
+     translation step the Realtime Database would not have required. */
+  toVal: function(v){
+    if(typeof v === "string")  return { stringValue: v };
+    if(typeof v === "boolean") return { booleanValue: v };
+    if(typeof v === "number")  return (v === Math.floor(v) && Math.abs(v) < 9e15)
+                                      ? { integerValue: String(v) }
+                                      : { doubleValue: v };
+    return { nullValue: null };
+  },
+  fromVal: function(f){
+    if(!f) return undefined;
+    if(f.stringValue    !== undefined) return f.stringValue;
+    if(f.integerValue   !== undefined) return Number(f.integerValue);
+    if(f.doubleValue    !== undefined) return Number(f.doubleValue);
+    if(f.booleanValue   !== undefined) return f.booleanValue;
+    if(f.timestampValue !== undefined) return Date.parse(f.timestampValue);
+    return undefined;
+  },
+  toDoc: function(obj){
+    var fields = {};
+    for(var k in obj) fields[k] = this.toVal(obj[k]);
+    return { fields: fields };
+  },
+  fromDoc: function(doc){
+    var o = {}, f = (doc && doc.fields) || {};
+    for(var k in f) o[k] = this.fromVal(f[k]);
+    return o;
+  },
+
+  /* ---- transport -------------------------------------------------------- */
+  http: function(url, opts){
+    var o = opts || {}, timer = 0;
+    if(typeof AbortController === "function"){
+      var ctl = new AbortController();
+      o.signal = ctl.signal;
+      timer = setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, LEADERBOARD.timeoutMs);
+    }
+    return fetch(url, o).then(function(r){
+      if(timer) clearTimeout(timer);
+      return r.text().then(function(t){
+        var body = null;
+        try { body = t ? JSON.parse(t) : null; } catch(e){}
+        if(!r.ok){
+          var msg = (body && body.error && (body.error.message || body.error.status)) || ("HTTP " + r.status);
+          var err = new Error(msg); err.status = r.status; throw err;
+        }
+        return body;
+      });
+    });
+  },
+
+  /* ---- anonymous auth ---------------------------------------------------
+     No account is created just to read the board. One is created the first
+     time a nickname is claimed, and then reused forever via its refresh
+     token, so a device keeps its identity and its row. */
+  loadAuth: function(){
+    try {
+      var raw = localStorage.getItem(this.AUTH_KEY);
+      if(raw){
+        var a = JSON.parse(raw);
+        if(a && a.refreshToken && a.uid){ this.auth = a; this.auth.expires = 0; }
+      }
+    } catch(e){}
+  },
+  saveAuth: function(){
+    try {
+      localStorage.setItem(this.AUTH_KEY, JSON.stringify({
+        uid: this.auth.uid, refreshToken: this.auth.refreshToken
+      }));
+    } catch(e){}
+  },
+
+  ensureAuth: function(){
+    var self = this;
+    if(!this.configured()) return Promise.reject(new Error("not configured"));
+    if(this.auth && this.auth.idToken && Date.now() < this.auth.expires - 60000)
+      return Promise.resolve(this.auth);
+
+    if(this.auth && this.auth.refreshToken){
+      return this.http("https://securetoken.googleapis.com/v1/token?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(this.auth.refreshToken)
+      }).then(function(d){
+        self.auth = { uid: d.user_id, idToken: d.id_token, refreshToken: d.refresh_token,
+                      expires: Date.now() + (Number(d.expires_in||3600) * 1000) };
+        self.saveAuth();
+        return self.auth;
+      }).catch(function(){                   // stale refresh token: start over
+        self.auth = null;
+        return self.signUp();
+      });
+    }
+    return this.signUp();
+  },
+
+  signUp: function(){
+    var self = this;
+    return this.http("https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ returnSecureToken: true })
+    }).then(function(d){
+      self.auth = { uid: d.localId, idToken: d.idToken, refreshToken: d.refreshToken,
+                    expires: Date.now() + (Number(d.expiresIn||3600) * 1000) };
+      self.saveAuth();
+      return self.auth;
+    });
+  },
+
+  /* ---- nickname ---------------------------------------------------------- */
+  normName: function(n){ return (n || "").normalize("NFC").trim().replace(/\s+/g, " "); },
+  validate: function(n){
+    var v = this.normName(n);
+    if(v.length < LEADERBOARD.nameMin || v.length > LEADERBOARD.nameMax) return "Name must be " + LEADERBOARD.nameMin + "-" + LEADERBOARD.nameMax + " characters";
+    if(!/^[\p{L}\p{N} _.\-]+$/u.test(v) || !/[\p{L}\p{N}]/u.test(v)) return "Letters, numbers, space, . _ - only";
+    return null;
+  },
+
+  /* Restores the nickname this device already owns, if any. */
+  restoreName: function(){
+    var self = this;
+    this.name = Save.data.playerName || null;
+    if(!this.configured() || !this.auth || !this.auth.uid) return;
+    this.ensureAuth().then(function(a){
+      return self.http(self.docBase() + "/players/" + encodeURIComponent(a.uid) +
+                       "?key=" + encodeURIComponent(LEADERBOARD.apiKey),
+                       { headers: { "authorization": "Bearer " + a.idToken } });
+    }).then(function(doc){
+      var o = self.fromDoc(doc);
+      if(o.name){
+        self.name = o.name; Save.data.playerName = o.name; Save.flush();
+        self.adoptLocal();
+        self.scheduleFlush(true);
+      }
+    }).catch(function(){ /* offline: keep the cached name */ });
+  },
+
+  /* Claims a free nickname. names/{key} and players/{uid} are written in one
+     commit because the players rule checks the names document with getAfter,
+     which only sees writes from the same transaction. */
+  claim: function(rawName){
+    var self = this;
+    var err = this.validate(rawName);
+    if(err) return Promise.reject(new Error(err));
+    var name = this.normName(rawName), key = name.toLowerCase();
+
+    if(!this.configured()){                       // local mode: just take it
+      this.name = name;
+      Save.data.playerName = name; Save.flush();
+      this.adoptLocal();
+      this.scheduleFlush(true);
+      return Promise.resolve(name);
+    }
+
+    return this.ensureAuth().then(function(a){
+      var hdr = { "authorization": "Bearer " + a.idToken, "content-type": "application/json" };
+      return self.http(self.docBase() + "/names/" + encodeURIComponent(key) +
+                       "?key=" + encodeURIComponent(LEADERBOARD.apiKey), { headers: hdr })
+        .then(function(doc){                      // exists - ours or someone else's?
+          var o = self.fromDoc(doc);
+          if(o.uid && o.uid !== a.uid) throw new Error("That name is taken");
+          return "own";
+        })
+        .catch(function(e){
+          if(e.message === "That name is taken") throw e;
+          if(e.status === 404) return "free";
+          throw e;
+        })
+        .then(function(state){
+          if(state === "own"){ return null; }     // already ours, nothing to write
+          var base = "projects/" + LEADERBOARD.projectId + "/databases/(default)/documents";
+          var nameDoc   = self.toDoc({ uid: a.uid, name: name });
+          var playerDoc = self.toDoc({ name: name, created: Date.now() });
+          nameDoc.name   = base + "/names/" + key;
+          playerDoc.name = base + "/players/" + a.uid;
+          return self.http(self.docBase() + ":commit?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+            method: "POST", headers: hdr,
+            body: JSON.stringify({ writes: [ { update: nameDoc }, { update: playerDoc } ] })
+          });
+        })
+        .then(function(){
+          self.name = name;
+          Save.data.playerName = name; Save.flush();
+          self.adoptLocal();             // history moves onto the Firebase uid
+          self.scheduleFlush(true);      // everything queued so far now has an owner
+          return name;
+        });
+    });
+  },
+
+  /* ---- ordering and the local mirror ------------------------------------- */
+  sort: function(list){
+    return list.sort(function(a,b){
+      return (b.pct - a.pct) || (b.coins - a.coins) ||
+             (a.attempts - b.attempts) || (a.at - b.at);
+    });
+  },
+  localAll: function(){
+    try { return JSON.parse(localStorage.getItem(this.KEY) || "{}"); } catch(e){ return {}; }
+  },
+  localRows: function(levelId){
+    return this.sort((this.localAll()[levelId] || []).slice());
+  },
+  localAdd: function(levelId, entry){
+    var all = this.localAll(), list = all[levelId] || [], at = -1;
+    for(var i=0;i<list.length;i++) if(list[i].id === entry.id) at = i;
+    if(at >= 0){
+      // Mirrors the server rule: forward on percent, or forward on attempts at
+      // the same percent. Comparing percent alone would freeze the try counter
+      // the moment a personal best stopped improving, which is most of the time.
+      var cur = list[at];
+      if(cur.pct > entry.pct) return;
+      if(cur.pct === entry.pct && (cur.attempts || 0) >= entry.attempts) return;
+      list[at] = entry;
+    }
+    else list.push(entry);
+    all[levelId] = this.sort(list).slice(0, 50);
+    try { localStorage.setItem(this.KEY, JSON.stringify(all)); } catch(e){}
+  },
+
+  /* ---- reading the board -------------------------------------------------
+     Ordered on pct alone: a single-field sort uses Firestore's automatic
+     index, so there is no composite index to create during setup. The
+     remaining tie-breaks are applied here. */
+  load: function(levelId){
+    var self = this;
+    self.rows[levelId] = self.localRows(levelId);
+    if(!self.configured()){ self.status[levelId] = "local"; return; }
+    self.status[levelId] = "loading";
+
+    var query = {
+      structuredQuery: {
+        from: [{ collectionId: "scores" }],
+        orderBy: [{ field: { fieldPath: "pct" }, direction: "DESCENDING" }],
+        limit: LEADERBOARD.topN * 3
+      }
+    };
+    self.http(self.docBase() + "/levels/" + encodeURIComponent(levelId) +
+              ":runQuery?key=" + encodeURIComponent(LEADERBOARD.apiKey), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(query)
+    }).then(function(res){
+      var list = [];
+      (res || []).forEach(function(r){
+        if(!r.document) return;                       // empty results carry only readTime
+        var o = self.fromDoc(r.document);
+        if(typeof o.name === "string" && typeof o.pct === "number"){
+          var path = r.document.name || "";
+          o.id = path.slice(path.lastIndexOf("/") + 1);
+          o.coins = o.coins || 0; o.attempts = o.attempts || 0; o.at = o.at || 0;
+          list.push(o);
+        }
+      });
+      self.rows[levelId] = self.sort(list);
+      self.status[levelId] = "online";
+    }).catch(function(e){
+      self.lastError = e.message || "unreachable";
+      self.status[levelId] = "error";
+    });
+  },
+
+  /* ---- writing a result ---------------------------------------------------
+     Every run is queued into a persisted outbox rather than sent straight out.
+     Three reasons: the player may not have claimed a nickname yet, the network
+     may be down, and a player grinding Impossible dies several times a minute
+     while Firestore bills per write. The outbox survives a reload, so nothing
+     is lost while any of those are true. */
+
+  OUTBOX_KEY: "neon-dash-outbox-v1",
+  outbox: {},        // levelId -> the best result not yet accepted by the server
+  rejects: {},       // levelId -> consecutive 403s, so a transient one is retried
+  flushing: false,   // guards against two flushes racing on the same entry
+  flushTimer: 0,
+  lastFlush: 0,
+  flushDelay: 15000,
+
+  loadOutbox: function(){
+    try { this.outbox = JSON.parse(localStorage.getItem(this.OUTBOX_KEY) || "{}") || {}; }
+    catch(e){ this.outbox = {}; }
+  },
+  saveOutbox: function(){
+    try { localStorage.setItem(this.OUTBOX_KEY, JSON.stringify(this.outbox)); } catch(e){}
+  },
+  queued: function(){ var n = 0; for(var k in this.outbox) n++; return n; },
+
+  /* Runs already played before a nickname existed were stored under the local
+     id and the placeholder name. Once a name is claimed - and once Firebase
+     hands out a uid, which replaces the local id - those rows are re-keyed and
+     renamed so the history belongs to the player rather than being orphaned. */
+  adoptLocal: function(){
+    var all = this.localAll(), me = this.myId(), mine = [Save.data.playerId, me], changed = false;
+    for(var levelId in all){
+      var list = all[levelId], kept = [], best = null;
+      for(var i=0;i<list.length;i++){
+        var r = list[i];
+        if(mine.indexOf(r.id) < 0){ kept.push(r); continue; }
+        if(r.id !== me){ r.id = me; changed = true; }
+        if(this.name && r.name !== this.name){ r.name = this.name; changed = true; }
+        // re-keying can collapse two rows into one; keep the stronger
+        if(!best || r.pct > best.pct ||
+           (r.pct === best.pct && (r.attempts||0) > (best.attempts||0))){
+          if(best) changed = true;
+          best = r;
+        } else changed = true;
+      }
+      if(best) kept.push(best);
+      all[levelId] = this.sort(kept);
+      this.rows[levelId] = all[levelId].slice();
+    }
+    if(changed){ try { localStorage.setItem(this.KEY, JSON.stringify(all)); } catch(e){} }
+  },
+
+  /* Called after every run, finished or failed. The local board updates
+     immediately either way, so the number on screen is always current. */
+  noteRun: function(levelId, pct, coins, attempts){
+    var prev = this.outbox[levelId];
+    var entry = {
+      pct: Math.round(pct * 10000) / 10000,
+      coins: coins | 0,
+      attempts: attempts | 0,
+      at: Date.now()
+    };
+    if(prev){                                   // never queue a regression
+      entry.pct      = Math.max(prev.pct, entry.pct);
+      entry.coins    = Math.max(prev.coins, entry.coins);
+      entry.attempts = Math.max(prev.attempts, entry.attempts);
+    }
+    this.outbox[levelId] = entry;
+    this.saveOutbox();
+
+    this.localAdd(levelId, {
+      id: this.myId(),
+      name: this.name || Save.data.playerName || "YOU",
+      pct: entry.pct, coins: entry.coins, attempts: entry.attempts, at: entry.at
+    });
+    this.rows[levelId] = this.localRows(levelId);
+
+    this.scheduleFlush();
+  },
+
+  /* Completing a level is worth sending at once rather than on the next tick. */
+  record: function(levelId, pct, coins, attempts){
+    this.noteRun(levelId, pct, coins, attempts);
+    this.scheduleFlush(true);
+  },
+
+  scheduleFlush: function(force){
+    var self = this;
+    if(!this.configured() || !this.name) return;      // nothing can be sent yet
+    if(force){
+      if(this.flushTimer){ clearTimeout(this.flushTimer); this.flushTimer = 0; }
+      return this.flush();
+    }
+    if(this.flushTimer) return;
+    var wait = Math.max(0, this.lastFlush + this.flushDelay - Date.now());
+    this.flushTimer = setTimeout(function(){ self.flushTimer = 0; self.flush(); }, wait);
+  },
+
+  flush: function(opts){
+    var self = this, keepalive = !!(opts && opts.keepalive);
+    if(!this.configured() || !this.name) return Promise.resolve();
+    // A scheduled flush and an explicit one can land together; without this the
+    // same entry is sent twice and the loser comes back as a bogus refusal.
+    if(this.flushing) return Promise.resolve();
+    var ids = [];
+    for(var k in this.outbox) ids.push(k);
+    if(!ids.length) return Promise.resolve();
+    this.flushing = true;
+    this.lastFlush = Date.now();
+
+    var done = function(){ self.flushing = false; };
+    return this.ensureAuth().then(function(a){
+      var chain = Promise.resolve();
+      ids.forEach(function(levelId){
+        chain = chain.then(function(){ return self.sendOne(a, levelId, keepalive); });
+      });
+      return chain;
+    }).then(done, function(e){
+      done();
+      self.lastError = e.message || "sync failed";    // queue survives for later
+    });
+  },
+
+  sendOne: function(a, levelId, keepalive){
+    var self = this, entry = this.outbox[levelId];
+    if(!entry) return Promise.resolve();
+
+    var body = this.toDoc({
+      name: this.name, pct: entry.pct, coins: entry.coins,
+      attempts: entry.attempts, at: entry.at
+    });
+    // A field mask keeps PATCH from clearing anything the rules did not see.
+    var mask = ["name","pct","coins","attempts","at"]
+               .map(function(f){ return "updateMask.fieldPaths=" + f; }).join("&");
+    var req = {
+      method: "PATCH",
+      headers: { "authorization": "Bearer " + a.idToken, "content-type": "application/json" },
+      body: JSON.stringify(body)
+    };
+    if(keepalive) req.keepalive = true;
+
+    return this.http(this.docBase() + "/levels/" + encodeURIComponent(levelId) +
+                     "/scores/" + encodeURIComponent(a.uid) +
+                     "?key=" + encodeURIComponent(LEADERBOARD.apiKey) + "&" + mask, req)
+      .then(function(){
+        delete self.outbox[levelId];
+        delete self.rejects[levelId];
+        self.saveOutbox();
+        self.status[levelId] = "online";
+      })
+      .catch(function(e){
+        if(e.status === 403){
+          // Two very different things arrive as 403. Usually it means the stored
+          // row already beats this one and there is nothing to do. But the first
+          // write right after claiming a name can also be refused because the
+          // rules' get() on players/{uid} has not caught up with the commit that
+          // created it. Dropping on the first refusal loses that score, so give
+          // it a couple of retries before believing it.
+          self.rejects[levelId] = (self.rejects[levelId] || 0) + 1;
+          self.lastError = "rules refused (" + self.rejects[levelId] + "/3): " +
+                           (e.message || "not an improvement");
+          if(self.rejects[levelId] >= 3){
+            delete self.outbox[levelId];
+            delete self.rejects[levelId];
+            self.saveOutbox();
+          }
+        } else {
+          self.lastError = e.message || "write failed";
+          self.status[levelId] = "error";             // stays queued
+        }
+      });
+  },
+
+  myId: function(){ return (this.auth && this.auth.uid) || Save.data.playerId; },
+
+  statusLabel: function(levelId){
+    switch(this.status[levelId]){
+      case "online":  return "ONLINE";
+      case "loading": return "SYNCING...";
+      case "error":   return "OFFLINE - SHOWING LOCAL";
+      default:        return this.configured() ? "LOCAL" : "LOCAL ONLY - NO FIREBASE PROJECT CONFIGURED";
+    }
+  },
+
+  init: function(){
+    this.loadAuth();
+    this.loadOutbox();
+    this.restoreName();
+    if(this.name) this.scheduleFlush(true);
+
+    // Last chance to get a queued result out before the tab goes away.
+    var self = this;
+    addEventListener("pagehide", function(){ self.flush({ keepalive: true }); });
+    addEventListener("visibilitychange", function(){
+      if(document.visibilityState === "hidden") self.flush({ keepalive: true });
+    });
+  }
+};
+
+/* --------------------------------------------------------------------------
+   Name entry. The one place a real DOM input earns its keep: on a phone it is
+   what summons the virtual keyboard, which a canvas cannot do. Claiming is now
+   asynchronous and can be refused - the name may already be taken - so the
+   result is surfaced rather than assumed.
+   -------------------------------------------------------------------------- */
+var NameEntry = {
+  el: null, open: false, busy: false, error: "",
+
+  init: function(){
+    this.el = document.getElementById("nameinput");
+    var self = this;
+    if(!this.el) return;
+    this.el.addEventListener("keydown", function(ev){
+      ev.stopPropagation();
+      if(ev.key === "Enter")  self.commit();
+      if(ev.key === "Escape") self.close();
+    });
+  },
+
+  show: function(){
+    if(!this.el) return;
+    this.open = true; this.error = ""; this.busy = false;
+    this.el.value = Leaderboard.name || Save.data.playerName || "";
+    this.el.disabled = false;
+    this.el.classList.add("on");
+    var self = this;
+    setTimeout(function(){ self.el.focus(); self.el.select(); }, 30);
+  },
+
+  commit: function(){
+    if(!this.el || this.busy) return;
+    var wanted = this.el.value;
+    var bad = Leaderboard.validate(wanted);
+    if(bad){ this.error = bad; return; }
+    this.busy = true; this.error = ""; this.el.disabled = true;
+    var self = this;
+    Leaderboard.claim(wanted).then(function(){
+      self.busy = false;
+      self.close();
+      if(Game.level) Leaderboard.load(Game.level.meta.id);
+    }).catch(function(e){
+      self.busy = false;
+      self.el.disabled = false;
+      self.error = e.message || "Could not claim that name";
+      setTimeout(function(){ if(self.open) self.el.focus(); }, 20);
+    });
+  },
+
+  close: function(){
+    this.open = false; this.busy = false;
+    if(this.el){ this.el.disabled = false; this.el.classList.remove("on"); this.el.blur(); }
+  }
+};
